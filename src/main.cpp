@@ -1203,6 +1203,76 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                           nCases, bad == 0 ? "全部符合预期" : "**有失败**");
             }
 
+            /* 电量文本自检：没有有效读数时绝不能显示成 0%。
+             * 这是真实缺陷（鼠标关机时接收器仍报 connect=1，走进"已连接"分支后
+             * 各处 `batteryValid ? battery : 0` 会凭空打印 "电量 0%"）。 */
+            {
+                struct BCase { bool valid; bool charging; int batt; const wchar_t *want; };
+                const BCase bc[] = {
+                    { false, false,   0, L"未知"   },
+                    { false, true,    0, L"未知"   },
+                    { true,  false,  69, L"69%"    },
+                    { true,  true,   15, L"15% ⚡" },
+                    { true,  false,   0, L"0%"     },   /* 真读到 0 才允许显示 0% */
+                };
+                const int nb = (int)(sizeof(bc) / sizeof(bc[0]));
+                int bad = 0;
+                for (int i = 0; i < nb; i++) {
+                    Device::State s;
+                    s.batteryValid = bc[i].valid;
+                    s.charging     = bc[i].charging;
+                    s.battery      = bc[i].batt;
+                    wchar_t got[32] = {0};
+                    TrayUi::FormatBatteryText(s, got, 32);
+                    if (wcscmp(got, bc[i].want) != 0) {
+                        bad++;
+                        AppendFmt(out, sizeof(out), off,
+                                  "  电量文本 valid=%d charge=%d batt=%d -> 不符预期\n",
+                                  bc[i].valid ? 1 : 0, bc[i].charging ? 1 : 0, bc[i].batt);
+                    }
+                }
+                /* 关键回归：无有效读数且未充电时，文本不得包含 "0%" */
+                {
+                    Device::State s;
+                    s.batteryValid = false; s.charging = false; s.battery = 0;
+                    wchar_t got[32] = {0};
+                    TrayUi::FormatBatteryText(s, got, 32);
+                    if (wcsstr(got, L"0%") != NULL) {
+                        bad++;
+                        AppendFmt(out, sizeof(out), off, "  无有效读数却显示成 0%%\n");
+                    }
+                }
+                checks += nb + 1;
+                fails  += bad;
+                AppendFmt(out, sizeof(out), off, "  电量文本 %d 个用例 -> %s\n",
+                          nb + 1, bad == 0 ? "全部符合预期（无读数不编造 0%）" : "**有失败**");
+            }
+
+            /* 电量合理性判定自检 */
+            {
+                struct PCase { unsigned lvl; unsigned chg; bool want; const char *tag; };
+                const PCase pc[] = {
+                    {  0, 0, false, "0%% 未充电 -> 无效（关机时的假 0%%）" },
+                    {  0, 1, true,  "0%% 充电中 -> 合法" },
+                    {  1, 0, true,  "1%% -> 合法" },
+                    { 60, 0, true,  "60%% -> 合法" },
+                    {100, 0, true,  "100%% -> 合法" },
+                    {101, 0, false, "101%% -> 无效" },
+                };
+                const int np = (int)(sizeof(pc) / sizeof(pc[0]));
+                int badp = 0;
+                for (int i = 0; i < np; i++) {
+                    if (McHose::IsPlausibleBattery(pc[i].lvl, pc[i].chg) != pc[i].want) {
+                        badp++;
+                        AppendFmt(out, sizeof(out), off, "  电量合理性 %s -> 不符预期\n", pc[i].tag);
+                    }
+                }
+                checks += np;
+                fails  += badp;
+                AppendFmt(out, sizeof(out), off, "  电量合理性 %d 个用例 -> %s\n",
+                          np, badp == 0 ? "全部符合预期" : "**有失败**");
+            }
+
             AppendFmt(out, sizeof(out), off, "结果: %d 项检查，%d 项失败 —— %s\n",
                       checks, fails, fails == 0 ? "全部通过" : "存在缺陷");
 
@@ -1479,8 +1549,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             AppendFmt(out, sizeof(out), off, "固件版本  : %s\n", fw[0] ? fw : "(未读到)");
             AppendFmt(out, sizeof(out), off, "连接模式  : %s\n",
                       st.connectMode == 1 ? "2.4G 无线" : "有线/其它");
-            AppendFmt(out, sizeof(out), off, "电量      : %d%%%s\n",
-                      st.battery, st.charging ? " (充电中)" : "");
+            if (st.batteryValid)
+                AppendFmt(out, sizeof(out), off, "电量      : %d%%%s\n",
+                          st.battery, st.charging ? " (充电中)" : "");
+            else
+                AppendFmt(out, sizeof(out), off,
+                          "电量      : (未读到 —— 鼠标可能已关机或休眠；"
+                          "接收器仍报连接，但不代表鼠标可读)\n");
             AppendFmt(out, sizeof(out), off, "回报率    : %d Hz (档位 %d/%d)\n",
                       st.rateHz, st.rateIndex + 1, st.rateCount);
             {

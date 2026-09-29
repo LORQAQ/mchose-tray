@@ -93,13 +93,15 @@ bool ParsePush(const unsigned char *buf, int len, State &st, bool &nameChanged)
     for (int i = 0; i < n; i++) p[i] = (unsigned char)(buf[1 + i] ^ 0xFF);
 
     if (p[0] != 0xE2 && p[0] != 0x1D) return false;
-    if (p[4] > 100) return false;          /* 电量必须合理 */
+    /* 电量合理性：>100 直接拒；0% 且未充电也拒（关机时的"看似真实"的 0%） */
+    if (!McHose::IsPlausibleBattery(p[4], p[3])) return false;
 
     st.pushCount++;                        /* 统计实际收到的有效推送条数 */
 
     bool changed = false;
     if (!st.batteryValid || st.battery != (int)p[4]) { st.battery = p[4]; changed = true; }
     st.batteryValid = true;
+    st.lastBatteryTick = GetTickCount();     /* 记录电量新鲜度 */
 
     bool charging = (p[3] != 0);
     if (st.charging != charging) { st.charging = charging; changed = true; }
@@ -548,19 +550,38 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 if (mask) Publish(mask);
             }
         }
+        /*
+         * 电量新鲜度检查：鼠标关机后接收器依然报 connect=1，
+         * 若不设超时，界面会继续显示最后一次读到的电量（陈旧值）。
+         * 阈值取 15 秒（周期读 3 秒 + 推送通常 2 秒级，15 秒静默即确定读不到）。
+         */
+        {
+            bool stale = false;
+            Lock();
+            if (g_state.batteryValid && g_state.lastBatteryTick != 0 &&
+                now - g_state.lastBatteryTick > 15000) {
+                g_state.batteryValid = false;
+                stale = true;
+            }
+            Unlock();
+            if (stale) Publish(CHANGE_BATTERY);
+        }
+
         if (lastInfoTick == 0 || now - lastInfoTick >= 3000) {
             lastInfoTick = now;
             if (!linked) {
                 /* 鼠标休眠：这不是"读失败"，不应累加离线判定 */
             } else {
                 McHose::DeviceInfo info;
-                if (McHose::ReadDeviceInfo(hFeature, info, 0)) {
+                if (McHose::ReadDeviceInfo(hFeature, info, 0) &&
+                    McHose::IsPlausibleBattery(info.batteryLevel, info.chargeStatus)) {
                     DWORD mask = 0;
                     Lock();
                     if (g_state.battery != (int)info.batteryLevel || !g_state.batteryValid) {
                         g_state.battery = info.batteryLevel; mask |= CHANGE_BATTERY;
                     }
                     g_state.batteryValid = true;
+                    g_state.lastBatteryTick = GetTickCount();
                     bool ch = (info.chargeStatus != 0);
                     if (g_state.charging != ch) { g_state.charging = ch; mask |= CHANGE_BATTERY; }
                     if (g_state.connectMode != info.connectMode) {

@@ -28,6 +28,13 @@ struct State {
     bool  connected = false;        /* 接收器/设备句柄可用 */
     bool  mouseLinked = false;      /* 鼠标本体是否与接收器保持链路（11 03 的 connect） */
     bool  batteryValid = false;
+    /*
+     * 最后一次成功读到电量的 tick（特性读或推送都算）。
+     * 用途：鼠标**关机**时接收器仍报告 connect=1，若只看 connect 就会一直
+     * 显示最后一次读到的电量（陈旧值）。超过阈值没有新读数即视为失效，
+     * 界面改为显示"未知"，而不是继续报一个可能早已过期的数字。
+     */
+    unsigned long lastBatteryTick = 0;
     int   battery = 0;              /* 0..100 */
     bool  charging = false;
     unsigned char connectMode = 0;  /* 1 = 2.4G 无线 */

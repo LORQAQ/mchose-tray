@@ -29,6 +29,20 @@ void UpdateTooltip(NOTIFYICONDATAW &nid, const Device::State &st);
 void BuildTooltipText(const Device::State &st, wchar_t *out, int cap);
 
 /*
+ * 统一的"电量"显示文本。所有界面/诊断都必须走这里，不要各自拼字符串。
+ *
+ * 起因是一个真实缺陷：鼠标关机（或刚启动还没读到电量）时，接收器仍报告
+ * connect=1，于是状态进入"已连接"分支，而各处的写法是
+ *     st.batteryValid ? st.battery : 0
+ * —— 没有有效读数时凭空打印出"电量 0%"，让人以为鼠标快没电了。
+ * 这类"编造数据"比不显示更糟，所以集中到一处并写清语义：
+ *   batteryValid=false -> "未知"（不写百分比）
+ *   充电中            -> "69% ⚡"
+ *   正常              -> "69%"
+ */
+void FormatBatteryText(const Device::State &st, wchar_t *out, int cap);
+
+/*
  * 低电量提醒的判定逻辑（纯函数，不碰任何系统状态，因此可被 --selftest 覆盖）。
  *
  * armed 是"是否已武装"：跨过阈值时提醒一次并解除武装，避免电量停在 19% 时反复弹窗；

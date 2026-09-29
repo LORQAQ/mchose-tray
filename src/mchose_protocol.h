@@ -153,6 +153,17 @@ int HzToRateIndex(int hz, int rateCount);
 int RateCountForMode(unsigned char connectMode, const ModelCaps &caps);
 
 /*
+ * 电量读数的合理性判定（纯函数，便于自检覆盖）。
+ *
+ * 为什么需要：鼠标**关机**时设备/接收器可能回一个"其他字段正常、只有电量为 0"
+ * 的载荷，此时"拒绝全零载荷"的判据会放行，界面就显示成看起来完全可信的 "电量 0%"。
+ * 而无线的鼠标在未充电时不可能真的处于 0%（那早该自动关机了），
+ * 所以 0% 且未充电一律视为**无效读数**（界面显示"未知"），而不是当真。
+ * 注意：0% 且正在充电是合法的（刚插上电的瞬间），1% 也是合法的。
+ */
+bool IsPlausibleBattery(unsigned batteryLevel, unsigned chargeStatus);
+
+/*
  * 最近一次成功打开的控制集合的**接口** VID/PID（例如 A7 Pro 2.4G = 5253:1021）。
  *
  * 必须与 11 06 回报的"机体 VID/PID"区分开：后者是设备类型码（A7 Pro 报 0x0010），

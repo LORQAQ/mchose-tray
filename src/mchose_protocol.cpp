@@ -437,6 +437,13 @@ int HzToRateIndex(int hz, int rateCount)
     return -1;
 }
 
+bool IsPlausibleBattery(unsigned batteryLevel, unsigned chargeStatus)
+{
+    if (batteryLevel > 100) return false;
+    if (batteryLevel == 0 && chargeStatus == 0) return false;   /* 0% 且未充电 => 无效读数 */
+    return true;
+}
+
 int RateCountForMode(unsigned char connectMode, const ModelCaps &caps)
 {
     /* connectMode == 1 为 2.4G 无线（多数机型支持 125..8000 共 6 档）

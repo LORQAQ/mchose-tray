@@ -498,6 +498,18 @@ HICON CreateBatteryIcon(const Device::State &st, int style)
     return CreateBatteryIconSized(st, style, GetSystemMetrics(SM_CXSMICON));
 }
 
+void FormatBatteryText(const Device::State &st, wchar_t *out, int cap)
+{
+    if (out == NULL || cap <= 0) return;
+    if (!st.batteryValid) {
+        /* 没有有效读数就如实说未知——绝不编造 0% */
+        wcsncpy(out, L"未知", (size_t)cap - 1);
+        out[cap - 1] = L'\0';
+        return;
+    }
+    swprintf(out, (size_t)cap, st.charging ? L"%d%% ⚡" : L"%d%%", st.battery);
+}
+
 void BuildTooltipText(const Device::State &st, wchar_t *out, int cap)
 {
     if (out == NULL || cap <= 0) return;
@@ -511,11 +523,12 @@ void BuildTooltipText(const Device::State &st, wchar_t *out, int cap)
         if (st.rateHz > 0) swprintf(rate, 32, L"%d Hz", st.rateHz);
         else               wcscpy(rate, L"未知");
 
+        wchar_t batt[32];
+        FormatBatteryText(st, batt, 32);
         swprintf(out, (size_t)cap,
-                 L"%ls\n电量 %d%%%ls · %ls\n回报率 %ls · DPI 档 %d",
+                 L"%ls\n电量 %ls · %ls\n回报率 %ls · DPI 档 %d",
                  st.modelName[0] ? st.modelName : L"MCHOSE 鼠标",
-                 st.batteryValid ? st.battery : 0,
-                 st.charging ? L"（充电中）" : L"",
+                 batt,
                  ModeText(st),
                  rate,
                  st.dpiActiveIndex + 1);
@@ -539,16 +552,15 @@ void BuildOsdLines(const Device::State &st, const wchar_t *note,
     } else if (st.connected && st.settingsValid) {
         unsigned dpiVal = (st.dpiActiveIndex < 6) ? st.dpi[st.dpiActiveIndex] : 0;
         swprintf(out[1], 160, L"第 %d 档 · %u DPI", st.dpiActiveIndex + 1, dpiVal);
-        swprintf(out[2], 160, L"电量 %d%%%ls · %ls · 固件 %ls",
-                 st.batteryValid ? st.battery : 0,
-                 st.charging ? L" ⚡" : L"",
-                 rate,
-                 st.firmware[0] ? st.firmware : L"-");
+        wchar_t batt[32];
+        FormatBatteryText(st, batt, 32);
+        swprintf(out[2], 160, L"电量 %ls · %ls · 固件 %ls",
+                 batt, rate, st.firmware[0] ? st.firmware : L"-");
     } else if (st.connected) {
         swprintf(out[1], 160, L"正在读取设置…");
-        swprintf(out[2], 160, L"电量 %d%%%ls",
-                 st.batteryValid ? st.battery : 0,
-                 st.charging ? L" ⚡" : L"");
+        wchar_t batt2[32];
+        FormatBatteryText(st, batt2, 32);
+        swprintf(out[2], 160, L"电量 %ls", batt2);
     } else {
         swprintf(out[1], 160, L"未连接");
         swprintf(out[2], 160, L"请检查 2.4G 接收器是否插好");
