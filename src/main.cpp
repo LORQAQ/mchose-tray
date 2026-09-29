@@ -371,6 +371,54 @@ DWORD GuiObjectCount(DWORD flag)
  * GDI 句柄耗尽（默认上限 10000），程序就会画不出东西。
  * 这里循环创建/销毁图标，对比前后的 GDI 计数；差值应为 0。
  */
+/*
+ * --help：打印全部命令行选项。
+ *
+ * 本程序是 GUI 子系统（-mwindows），从 cmd 运行时 stdout 虽可用但控制台不会等待，
+ * 因此同时写一份 mchose-tray-help.txt，保证任何启动方式都能看到内容。
+ */
+void PrintUsage()
+{
+    static const char kHelp[] =
+        "mchose-tray — 迈从（MCHOSE）鼠标托盘控制台\n"
+        "\n"
+        "不带参数运行：进入托盘模式（右下角显示电量图标）。\n"
+        "本程序是 GUI 程序，不会弹出主窗口。\n"
+        "\n"
+        "诊断与自检选项：\n"
+        "  --help                显示本帮助\n"
+        "  --selftest            菜单分发 + 宽字符格式化自测（33 项，不需要设备）\n"
+        "  --dump                读取完整状态并写入 mchose-tray-dump.txt\n"
+        "                          退出码 0=完整 / 2=鼠标休眠 / 1=其它不完整\n"
+        "  --model-scan          机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）\n"
+        "  --watch <秒>          观察 N 秒，验证设置未变时不会重复通知 UI\n"
+        "  --set-rate <Hz>       下发回报率并做写后回读校验（125/500/1000/2000/4000/8000）\n"
+        "  --set-dpi-stage <n>   切换 DPI 档位（n 从 0 开始）并做写后回读校验\n"
+        "  --icon-preview <文件> 导出两种样式的图标预览图纸（16/20/24/32 px）\n"
+        "  --icon-stress <n>     图标路径 GDI 泄漏压力测试（预热后测量，增量应为 0）\n"
+        "\n"
+        "常用排查：\n"
+        "  右下角没有图标       先看程序目录下 mchose-tray-gui.log\n"
+        "                       若为 err=5，说明 exe 所在目录带 Low 完整性标签，\n"
+        "                       请用 deploy.bat 安装到普通目录后运行\n"
+        "  提示\"鼠标休眠中\"     接收器正常，移动鼠标唤醒即可，无需重启程序\n"
+        "  诊断读到全零         托盘程序与诊断不要同时运行（会争抢设备命令缓冲）\n"
+        "\n"
+        "文档：README.md（用法与性能）· docs/PROTOCOL.md（协议规格）\n";
+
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+        DWORD w = 0;
+        WriteFile(hOut, kHelp, (DWORD)strlen(kHelp), &w, NULL);
+    }
+    HANDLE hf = CreateFileW(L"mchose-tray-help.txt", GENERIC_WRITE, 0, NULL,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf != INVALID_HANDLE_VALUE) {
+        DWORD w = 0;
+        WriteFile(hf, kHelp, (DWORD)strlen(kHelp), &w, NULL);
+        CloseHandle(hf);
+    }
+}
 int IconStress(int iterations)
 {
     printf("=== 图标路径 GDI 泄漏压力测试 ===\n");
@@ -799,6 +847,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         int  setRateHz = 0;
         int  setDpiStage = -1;
         bool modelScan = false;
+        bool wantHelp = false;
         int  watchSec = 0;
         bool doPreview = false;
         int  iconStress = 0;
@@ -816,6 +865,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 doPreview = true;
                 wcsncpy(previewPath, argv[i + 1], 511);
                 previewPath[511] = L'\0';
+            }
+            else if (wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0 ||
+                     wcscmp(argv[i], L"/?") == 0) {
+                wantHelp = true;
             }
             else if (wcscmp(argv[i], L"--model-scan") == 0) {
                 modelScan = true;
@@ -842,6 +895,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             HANDLE probe = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\mchose-tray-single");
             if (probe != NULL) { trayRunning = true; CloseHandle(probe); }
         }
+
+        if (wantHelp) { PrintUsage(); return 0; }
 
         /* --icon-stress <n>：图标路径 GDI 泄漏压力测试 */
         if (iconStress > 0) return IconStress(iconStress);

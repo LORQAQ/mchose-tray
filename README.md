@@ -143,6 +143,8 @@ VID/PID 用 `tools/hid_probe.exe 5253`（或 `3837`）读取；若只知道型�
   不会误报成"已连接，电量 0%"
 - **被动监听**设备主动推送的 `report 0x13`，零写入获取电量
 - **自动重连**：连续失败判离线并指数退避重试；explorer 重启后自动重新挂载托盘图标
+- **跟随设备的硬件操作**：用鼠标上的 DPI 按键切换档位后，程序约 3 秒内读到新的活动档位并
+  更新提示/悬浮窗；右键菜单会在正确的档位上打勾，可用来确认按键是否生效
 
 ---
 
@@ -151,6 +153,7 @@ VID/PID 用 `tools/hid_probe.exe 5253`（或 `3837`）读取；若只知道型�
 与 GUI 共用同一套协议层与设备层，可脚本化：
 
 ```cmd
+bin\mchose-tray.exe --help               :: 显示全部命令行选项（同时写出 mchose-tray-help.txt）
 bin\mchose-tray.exe --selftest           :: 菜单分发 + 宽字符格式化自测（33 项，不需要设备）
 bin\mchose-tray.exe --model-scan         :: 机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）
 bin\mchose-tray.exe --dump               :: 读取完整状态并写入 mchose-tray-dump.txt

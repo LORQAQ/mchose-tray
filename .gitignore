@@ -10,6 +10,7 @@ bin/
 mchose-tray-gui.log
 Cmchose-tray-gui.log
 mchose-tray-dump.txt
+mchose-tray-help.txt
 
 # 图标预览/压测中间产物
 icon-preview.bmp
