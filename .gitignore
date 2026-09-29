@@ -1,0 +1,33 @@
+# 构建产物（请自行 build.bat 生成，勿提交二进制）
+bin/
+*.exe
+*.o
+*.obj
+*.res
+*.dll
+
+# 运行时产物
+mchose-tray-gui.log
+Cmchose-tray-gui.log
+mchose-tray-dump.txt
+
+# 图标预览/压测中间产物
+icon-preview.bmp
+icon-preview.png
+
+# 参考项目与分析中间产物（第三方代码，不入库）
+rapoo-tray/
+mchose-research/
+re/pages/
+re/chunks/
+re/*.js
+re/*.html
+re/*.strings.txt
+
+# 编辑器/系统
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
