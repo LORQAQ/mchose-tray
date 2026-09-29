@@ -1,0 +1,42 @@
+/*
+ * mchose-tray.rc — 可执行文件版本信息
+ *
+ * 为什么需要：发布出去的单文件 exe 若没有 VERSIONINFO，
+ * 在"文件属性 → 详细信息"里是空白，既不像正经软件，
+ * 也让人无法核对下载到的版本。这里补齐基本信息。
+ *
+ * 编译：windres src\mchose-tray.rc -O coff -o obj\mchose-tray.res
+ * 保持 ASCII，避免 windres 在不同代码页下解析中文出错。
+ */
+
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "LORQAQ"
+            VALUE "FileDescription",  "MCHOSE mouse tray console (battery, DPI, polling rate)"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "mchose-tray"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "mchose-tray.exe"
+            VALUE "ProductName",      "mchose-tray"
+            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "Comments",         "Not affiliated with MCHOSE. Install to a normal folder (see README)."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

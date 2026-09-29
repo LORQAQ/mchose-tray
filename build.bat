@@ -14,13 +14,23 @@ setlocal
 cd /d "%~dp0"
 
 if not exist bin mkdir bin
+if not exist obj mkdir obj
+
+rem --- version resource (optional; skipped if windres is unavailable) ---
+set "RES="
+where windres >nul 2>nul
+if not errorlevel 1 (
+    windres src\mchose-tray.rc -O coff -o obj\mchose-tray.res >nul 2>nul
+    if not errorlevel 1 set "RES=obj\mchose-tray.res"
+)
 
 where g++ >nul 2>nul
 if errorlevel 1 goto nogpp
 
 echo [1/3] Building mchose-tray.exe ...
-g++ -O2 -Wall -Wextra -municode -mwindows -static -s src\main.cpp src\mchose_protocol.cpp src\model_db.cpp src\device_manager.cpp src\tray_ui.cpp -o bin\mchose-tray.exe -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32
+g++ -O2 -Wall -Wextra -municode -mwindows -static -s src\main.cpp src\mchose_protocol.cpp src\model_db.cpp src\device_manager.cpp src\tray_ui.cpp %RES% -o bin\mchose-tray.exe -lsetupapi -lhid -luser32 -lgdi32 -lshell32 -ladvapi32
 if errorlevel 1 goto buildfail
+if defined RES (echo      version resource: obj\mchose-tray.res) else (echo      version resource: SKIPPED ^(windres not found^))
 for %%F in (bin\mchose-tray.exe) do echo      OK  %%~nxF  (%%~zF bytes)
 
 echo [2/3] Building tools ...

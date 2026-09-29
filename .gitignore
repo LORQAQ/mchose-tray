@@ -1,5 +1,6 @@
 # 构建产物（请自行 build.bat 生成，勿提交二进制）
 bin/
+obj/
 *.exe
 *.o
 *.obj
