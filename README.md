@@ -163,6 +163,9 @@ VID/PID 用 `tools/hid_probe.exe 5253`（或 `3837`）读取；若只知道型�
 - **自动重连**：连续失败判离线并指数退避重试；explorer 重启后自动重新挂载托盘图标
 - **跟随设备的硬件操作**：用鼠标上的 DPI 按键切换档位后，程序约 3 秒内读到新的活动档位并
   更新提示/悬浮窗；右键菜单会在正确的档位上打勾，可用来确认按键是否生效
+- **低电量提醒**：电量 ≤20% 且未充电时弹一次通知。**只提醒一次**，不会在 19% 停留时反复骚扰；
+  电量回升到 25% 以上、或开始充电后重新武装，因此"充上电→再掉到 20%"会再次提醒。
+  插着电时不打扰。可用 `--test-notify` 确认本机通知真的能显示
 
 ---
 
@@ -174,6 +177,7 @@ VID/PID 用 `tools/hid_probe.exe 5253`（或 `3837`）读取；若只知道型�
 bin\mchose-tray.exe --help               :: 显示全部命令行选项（同时写出 mchose-tray-help.txt）
 bin\mchose-tray.exe --selftest           :: 菜单分发 + 宽字符格式化自测（33 项，不需要设备）
 bin\mchose-tray.exe --model-scan         :: 机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）
+bin\mchose-tray.exe --test-notify        :: 弹一条示例通知（写结果到 mchose-tray-notify.txt）
 bin\mchose-tray.exe --autostart status   :: 开机自启状态（回报已登记路径并与当前 exe 比对）
 bin\mchose-tray.exe --autostart on       :: 开启开机自启（写 HKCU\...\Run，无需管理员权限）
 bin\mchose-tray.exe --autostart off      :: 关闭开机自启
@@ -354,6 +358,17 @@ polling_rate.exe 8 60
 
 > 绝对准确度取决于鼠标自身的电量计，程序无法验证。要真正确认，需要做一次完整放电循环，
 > 把程序显示与实际续航对比。
+
+**低电量提醒没弹出来？**
+先跑 `bin\mchose-tray.exe --test-notify`，它会写结果到 `mchose-tray-notify.txt`：
+
+- 若显示 `NIM_ADD : 失败 err=5` → 程序跑在完整性级别过低的目录里（见本文开头的「必读」），
+  换到普通目录即可
+- 若显示 `NIM_ADD : 成功` 但屏幕上看不到气泡 → 是系统把它静音了，
+  检查「设置 → 系统 → 通知」以及「专注助手 / 勿扰模式」
+
+提醒本身的判定规则：电量 ≤20% 且未充电时提醒**一次**；回升到 >25% 或开始充电后重新武装。
+这些边界都有自检覆盖（`--selftest` 里 7 个用例）。
 
 **开机自启没生效？**
 自启项存的是**绝对路径**，移动/重命名 exe 后会静默失效（注册表里还留着旧路径）。

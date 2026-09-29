@@ -391,6 +391,7 @@ void PrintUsage()
         "  --dump                读取完整状态并写入 mchose-tray-dump.txt\n"
         "                          退出码 0=完整 / 2=鼠标休眠 / 1=其它不完整\n"
         "  --model-scan          机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）\n"
+        "  --test-notify         弹一条示例通知，确认本机通知能正常显示\n"
         "  --autostart on|off|status\n"
         "                        开机自启开关；status 会回报注册表里已登记的路径，\n"
         "                        并与当前 exe 比对（移动过 exe 会导致自启静默失效）\n"
@@ -498,6 +499,9 @@ struct TrayVisualCache {
     wchar_t tip[128]     = {0};
 };
 TrayVisualCache g_cache;
+
+/* 低电量提醒的“武装”状态：跨过阈值提醒一次，电量回升或开始充电后重新武装 */
+bool g_lowBattArmed = true;
 
 HICON      g_hIcon = NULL;
 UINT       g_wmTaskbarCreated = 0;
@@ -607,6 +611,13 @@ void RefreshTray(bool showOsdIfNeeded, bool newConnection, const wchar_t *note)
         g_nid.hIcon = g_hIcon;
         g_nid.uFlags = NIF_TIP | NIF_MESSAGE | (g_hIcon ? NIF_ICON : 0);
         Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+    }
+
+    /* 低电量提醒：跨过阈值只提醒一次，之后静默；电量回升或开始充电后重新武装 */
+    if (TrayUi::LowBatteryShouldNotify(g_lowBattArmed, st.battery, st.batteryValid, st.charging)) {
+        wchar_t text[256];
+        swprintf(text, 256, L"鼠标电量仅剩 %d%%，请及时充电。", st.battery);
+        TrayUi::NotifyBalloon(g_nid, L"迈从鼠标电量偏低", text, NIIF_WARNING);
     }
 
     if (g_osdOnConnect && (newConnection || showOsdIfNeeded || note != NULL))
@@ -851,6 +862,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         int  setDpiStage = -1;
         bool modelScan = false;
         bool wantHelp = false;
+        bool testNotify = false;
         int  autoStartMode = 0;   /* 0=未指定 1=on 2=off 3=status */
         int  watchSec = 0;
         bool doPreview = false;
@@ -869,6 +881,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 doPreview = true;
                 wcsncpy(previewPath, argv[i + 1], 511);
                 previewPath[511] = L'\0';
+            }
+            else if (wcscmp(argv[i], L"--test-notify") == 0) {
+                testNotify = true;
             }
             else if (wcscmp(argv[i], L"--autostart") == 0 && i + 1 < argc) {
                 if      (wcscmp(argv[i + 1], L"on")     == 0) autoStartMode = 1;
@@ -907,6 +922,85 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         }
 
         if (wantHelp) { PrintUsage(); return 0; }
+
+        /*
+         * --test-notify：弹一条示例通知，用来确认本机通知真的能显示
+         * （专注助手 / 通知设置都可能把它静音，肉眼确认一次最可靠）。
+         * 它会临时注册一个独立托盘图标，显示约 8 秒后退出，不影响正在运行的托盘程序。
+         */
+        if (testNotify) {
+            WNDCLASSEXW wc;
+            memset(&wc, 0, sizeof(wc));
+            wc.cbSize = sizeof(wc);
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandleW(NULL);
+            wc.lpszClassName = L"McHoseNotifyTest";
+            RegisterClassExW(&wc);
+
+            HWND hw = CreateWindowExW(0, L"McHoseNotifyTest", L"", WS_POPUP,
+                                      0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+            if (hw == NULL) { printf("创建窗口失败\n"); return 1; }
+
+            NOTIFYICONDATAW nid;
+            memset(&nid, 0, sizeof(nid));
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = hw;
+            nid.uID = 0x4D43;                 /* 'MC'：与主程序不同，避免互相顶替 */
+            nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
+            nid.uCallbackMessage = WM_APP + 1;
+            nid.hIcon = LoadIconW(NULL, IDI_INFORMATION);
+            wcscpy(nid.szTip, L"mchose-tray 通知测试");
+            if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
+                DWORD e = GetLastError();
+                char rep[512];
+                int rn = snprintf(rep, sizeof(rep),
+                    "=== 通知测试 ===\r\n"
+                    "NIM_ADD     : 失败 err=%lu\r\n"
+                    "通知已发送  : 否\r\n"
+                    "说明        : %s\r\n",
+                    (unsigned long)e,
+                    (e == 5) ? "错误 5 = 拒绝访问：本进程完整性级别低于 explorer，UIPI 拦掉了托盘消息。\r\n"
+                               "              请把 exe 放到普通目录（用 deploy.bat）后重试。"
+                             : "请检查托盘是否可用（explorer 是否在运行）。");
+                HANDLE hf = CreateFileW(L"mchose-tray-notify.txt", GENERIC_WRITE, 0, NULL,
+                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (hf != INVALID_HANDLE_VALUE) {
+                    DWORD w = 0;
+                    if (rn > 0) WriteFile(hf, rep, (DWORD)rn, &w, NULL);
+                    CloseHandle(hf);
+                }
+                printf("NIM_ADD 失败 err=%lu\n", (unsigned long)e);
+                return 1;
+            }
+            TrayUi::NotifyBalloon(nid, L"迈从鼠标电量偏低",
+                                  L"这是一条示例通知。能看到它，说明低电量提醒可用。",
+                                  NIIF_WARNING);
+
+            /* 写结果文件：本程序是 GUI 子系统，PowerShell/cmd 抓不到退出码与 stdout，
+             * 只能靠文件回报结论（与其它诊断命令一致）。 */
+            {
+                char rep[512];
+                int rn = snprintf(rep, sizeof(rep),
+                    "=== 通知测试 ===\r\n"
+                    "NIM_ADD     : 成功\r\n"
+                    "通知已发送  : 是\r\n"
+                    "说明        : 托盘图标已临时注册并发出气泡通知。\r\n"
+                    "              若右下角没看到，检查「设置 → 系统 → 通知」与「专注助手」是否把它静音。\r\n"
+                    "              显示约 8 秒后本进程自动退出，不影响正在运行的托盘程序。\r\n");
+                HANDLE hf = CreateFileW(L"mchose-tray-notify.txt", GENERIC_WRITE, 0, NULL,
+                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (hf != INVALID_HANDLE_VALUE) {
+                    DWORD w = 0;
+                    if (rn > 0) WriteFile(hf, rep, (DWORD)rn, &w, NULL);
+                    CloseHandle(hf);
+                }
+            }
+            printf("已发送示例通知，显示约 8 秒后自动退出。\n");
+            Sleep(8000);
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+            DestroyWindow(hw);
+            return 0;
+        }
 
         /*
          * --autostart on|off|status：开机自启（HKCU\...\Run，无需管理员权限）。
@@ -1076,6 +1170,37 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 if (!okw) fails++;
                 AppendFmt(out, sizeof(out), off,
                           "  宽字符 %%ls 格式化 -> \"%s\" %s\n", u8, okw ? "OK" : "**FAIL**");
+            }
+
+            /* 低电量提醒的判定逻辑自检。
+             * 价值全在边界与状态机（只提醒一次、回升重新武装、充电时不打扰），
+             * 肉眼看气泡覆盖不到，所以用断言钉住。 */
+            {
+                struct Case { int batt; bool valid; bool charging; bool armedIn; bool want; bool armedOut; const char *tag; };
+                const Case cases[] = {
+                    { 19, true,  false, true,  true,  false, "19%% 首次跨过" },
+                    { 19, true,  false, false, false, false, "19%% 已提醒过" },
+                    { 19, true,  true,  false, false, true,  "19%% 充电中" },
+                    { 30, true,  false, false, false, true,  "30%% 回升" },
+                    { 22, true,  false, false, false, false, "22%% 缓冲区" },
+                    {  0, false, false, true,  false, true,  "无读数" },
+                    { 20, true,  false, true,  true,  false, "20%% 恰等于阈值" },
+                };
+                const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
+                int bad = 0;
+                for (int ci = 0; ci < nCases; ci++) {
+                    bool armed = cases[ci].armedIn;
+                    bool got = TrayUi::LowBatteryShouldNotify(armed, cases[ci].batt,
+                                                              cases[ci].valid, cases[ci].charging);
+                    if (got != cases[ci].want || armed != cases[ci].armedOut) {
+                        bad++;
+                        AppendFmt(out, sizeof(out), off, "  低电量判定 %s -> 不符预期\n", cases[ci].tag);
+                    }
+                }
+                checks += nCases;
+                fails  += bad;
+                AppendFmt(out, sizeof(out), off, "  低电量提醒判定 %d 个用例 -> %s\n",
+                          nCases, bad == 0 ? "全部符合预期" : "**有失败**");
             }
 
             AppendFmt(out, sizeof(out), off, "结果: %d 项检查，%d 项失败 —— %s\n",

@@ -27,6 +27,23 @@ void UpdateTooltip(NOTIFYICONDATAW &nid, const Device::State &st);
  * 本工具链下 swprintf 的 %s 是**窄**语义，宽串必须用 %ls，
  * 写错会得到乱码且不会有任何编译警告。 */
 void BuildTooltipText(const Device::State &st, wchar_t *out, int cap);
+
+/*
+ * 低电量提醒的判定逻辑（纯函数，不碰任何系统状态，因此可被 --selftest 覆盖）。
+ *
+ * armed 是"是否已武装"：跨过阈值时提醒一次并解除武装，避免电量停在 19% 时反复弹窗；
+ * 电量回升到 kLowBatteryRearmPct 以上、或开始充电时会重新武装。
+ * 这样"充上电→再掉到 20%"能再次提醒，而"一直低电量"只提醒一次。
+ *
+ * 返回 true 表示本次应当弹出提醒。
+ */
+constexpr int kLowBatteryPct      = 20;   /* 低于等于此值提醒 */
+constexpr int kLowBatteryRearmPct = 25;   /* 回升到此值以上重新武装 */
+
+bool LowBatteryShouldNotify(bool &armed, int battery, bool batteryValid, bool charging);
+
+/* 通过托盘图标弹一条气泡/通知。title 可为空。 */
+void NotifyBalloon(NOTIFYICONDATAW &nid, const wchar_t *title, const wchar_t *text, DWORD flags);
 void BuildOsdLines(const Device::State &st, const wchar_t *note,
                    wchar_t out[3][160]);
 

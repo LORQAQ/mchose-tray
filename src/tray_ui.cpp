@@ -561,6 +561,40 @@ void BuildOsdLines(const Device::State &st, const wchar_t *note,
     }
 }
 
+bool LowBatteryShouldNotify(bool &armed, int battery, bool batteryValid, bool charging)
+{
+    if (!batteryValid) return false;          /* 没读到就别猜，也不改变武装状态 */
+
+    if (charging) { armed = true; return false; }   /* 已插电，重新武装且不打扰 */
+
+    if (battery > kLowBatteryRearmPct) { armed = true; return false; }
+
+    if (battery <= kLowBatteryPct) {
+        if (armed) { armed = false; return true; }  /* 只在"跨过"阈值时提醒一次 */
+        return false;
+    }
+    return false;                             /* 20 < battery <= 25 的缓冲区不动作 */
+}
+
+void NotifyBalloon(NOTIFYICONDATAW &nid, const wchar_t *title, const wchar_t *text, DWORD flags)
+{
+    /*
+     * 用一份局部副本，避免把 NIF_INFO 留在全局 g_nid 上——
+     * 之后的状态刷新会复用 g_nid，残留 uFlags 会让每次刷新都重播这条通知。
+     */
+    NOTIFYICONDATAW tmp = nid;
+    tmp.uFlags = NIF_INFO;
+    tmp.dwInfoFlags = flags;
+    tmp.uTimeout = 10000;
+    if (title != NULL) wcsncpy(tmp.szInfoTitle, title, 63);
+    else               tmp.szInfoTitle[0] = L'\0';
+    tmp.szInfoTitle[63] = L'\0';
+    if (text != NULL) wcsncpy(tmp.szInfo, text, 255);
+    else              tmp.szInfo[0] = L'\0';
+    tmp.szInfo[255] = L'\0';
+    Shell_NotifyIconW(NIM_MODIFY, &tmp);
+}
+
 void UpdateTooltip(NOTIFYICONDATAW &nid, const Device::State &st)
 {
     wchar_t buf[256] = {0};
