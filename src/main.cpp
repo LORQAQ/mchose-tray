@@ -1552,10 +1552,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             if (st.batteryValid)
                 AppendFmt(out, sizeof(out), off, "电量      : %d%%%s\n",
                           st.battery, st.charging ? " (充电中)" : "");
+            else if (!st.connected)
+                AppendFmt(out, sizeof(out), off, "电量      : (未读到 —— 接收器未连接)\n");
+            else if (!st.mouseLinked)
+                AppendFmt(out, sizeof(out), off,
+                          "电量      : (未读到 —— 鼠标休眠中，接收器正常；移动鼠标即可唤醒)\n");
             else
                 AppendFmt(out, sizeof(out), off,
-                          "电量      : (未读到 —— 鼠标可能已关机或休眠；"
-                          "接收器仍报连接，但不代表鼠标可读)\n");
+                          "电量      : (未读到 —— 鼠标已连接但读不到电量，通常说明鼠标已关机；"
+                          "connect 字段只表示绑定关系)\n");
             AppendFmt(out, sizeof(out), off, "回报率    : %d Hz (档位 %d/%d)\n",
                       st.rateHz, st.rateIndex + 1, st.rateCount);
             {
