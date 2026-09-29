@@ -599,34 +599,63 @@ void CycleBatteryStyle()
     RegSetDword(L"BatteryStyle", (DWORD)s);
 }
 
-bool IsAutoRunEnabled()
+bool GetAutoRunCommand(wchar_t *out, int cap)
 {
+    if (out == NULL || cap <= 0) return false;
+    out[0] = L'\0';
+
     HKEY k;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
-    wchar_t val[MAX_PATH] = {0};
-    DWORD cb = sizeof(val), type = 0;
-    bool found = (RegQueryValueExW(k, kRunValue, NULL, &type, (LPBYTE)val, &cb) == ERROR_SUCCESS);
+
+    DWORD cb = (DWORD)((size_t)cap * sizeof(wchar_t));
+    DWORD type = 0;
+    LONG r = RegQueryValueExW(k, kRunValue, NULL, &type, (LPBYTE)out, &cb);
     RegCloseKey(k);
-    return found;
+
+    if (r != ERROR_SUCCESS) { out[0] = L'\0'; return false; }
+    out[cap - 1] = L'\0';          /* RegQueryValueExW 不保证以 0 结尾 */
+    return true;
+}
+
+bool IsAutoRunEnabled()
+{
+    wchar_t buf[512];
+    return GetAutoRunCommand(buf, 512);
+}
+
+bool EnableAutoRun()
+{
+    wchar_t path[MAX_PATH] = {0};
+    if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0 || path[0] == L'\0') return false;
+
+    /* 必须带引号：路径含空格时，Run 项会被拆成"程序 + 参数"从而启动失败 */
+    wchar_t quoted[MAX_PATH + 8];
+    swprintf(quoted, MAX_PATH + 8, L"\"%ls\"", path);
+
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, NULL, 0,
+                        KEY_ALL_ACCESS, NULL, &k, NULL) != ERROR_SUCCESS) return false;
+    LONG r = RegSetValueExW(k, kRunValue, 0, REG_SZ,
+                            (const BYTE *)quoted,
+                            (DWORD)((wcslen(quoted) + 1) * sizeof(wchar_t)));
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS;
+}
+
+bool DisableAutoRun()
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_ALL_ACCESS, &k) != ERROR_SUCCESS)
+        return true;               /* 键不存在 = 本来就没登记，视为成功 */
+    RegDeleteValueW(k, kRunValue);
+    RegCloseKey(k);
+    return true;
 }
 
 void ToggleAutoRun()
 {
-    HKEY k;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, NULL, 0,
-                        KEY_ALL_ACCESS, NULL, &k, NULL) != ERROR_SUCCESS) return;
-
-    if (IsAutoRunEnabled()) {
-        RegDeleteValueW(k, kRunValue);
-    } else {
-        wchar_t path[MAX_PATH] = {0};
-        GetModuleFileNameW(NULL, path, MAX_PATH);
-        wchar_t quoted[MAX_PATH + 8];
-        swprintf(quoted, MAX_PATH + 8, L"\"%ls\"", path);
-        RegSetValueExW(k, kRunValue, 0, REG_SZ,
-                       (const BYTE *)quoted, (DWORD)((wcslen(quoted) + 1) * sizeof(wchar_t)));
-    }
-    RegCloseKey(k);
+    if (IsAutoRunEnabled()) DisableAutoRun();
+    else                    EnableAutoRun();
 }
 
 }  // namespace TrayUi

@@ -391,6 +391,9 @@ void PrintUsage()
         "  --dump                读取完整状态并写入 mchose-tray-dump.txt\n"
         "                          退出码 0=完整 / 2=鼠标休眠 / 1=其它不完整\n"
         "  --model-scan          机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）\n"
+        "  --autostart on|off|status\n"
+        "                        开机自启开关；status 会回报注册表里已登记的路径，\n"
+        "                        并与当前 exe 比对（移动过 exe 会导致自启静默失效）\n"
         "  --watch <秒>          观察 N 秒，验证设置未变时不会重复通知 UI\n"
         "  --set-rate <Hz>       下发回报率并做写后回读校验（125/500/1000/2000/4000/8000）\n"
         "  --set-dpi-stage <n>   切换 DPI 档位（n 从 0 开始）并做写后回读校验\n"
@@ -848,6 +851,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         int  setDpiStage = -1;
         bool modelScan = false;
         bool wantHelp = false;
+        int  autoStartMode = 0;   /* 0=未指定 1=on 2=off 3=status */
         int  watchSec = 0;
         bool doPreview = false;
         int  iconStress = 0;
@@ -865,6 +869,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 doPreview = true;
                 wcsncpy(previewPath, argv[i + 1], 511);
                 previewPath[511] = L'\0';
+            }
+            else if (wcscmp(argv[i], L"--autostart") == 0 && i + 1 < argc) {
+                if      (wcscmp(argv[i + 1], L"on")     == 0) autoStartMode = 1;
+                else if (wcscmp(argv[i + 1], L"off")    == 0) autoStartMode = 2;
+                else if (wcscmp(argv[i + 1], L"status") == 0) autoStartMode = 3;
+                else autoStartMode = 3;      /* 参数不认识时只报状态，不改系统 */
             }
             else if (wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0 ||
                      wcscmp(argv[i], L"/?") == 0) {
@@ -897,6 +907,77 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         }
 
         if (wantHelp) { PrintUsage(); return 0; }
+
+        /*
+         * --autostart on|off|status：开机自启（HKCU\...\Run，无需管理员权限）。
+         *
+         * 除了开关本身，还回报**注册表里已登记的路径**并与当前 exe 路径比对：
+         * 自启项存的是绝对路径，用户移动过 exe 之后自启会静默失效
+         * （菜单照样打勾、开机什么也不发生），这一条就是为了让那种情况可见。
+         */
+        if (autoStartMode != 0) {
+            wchar_t me[MAX_PATH] = {0};
+            wchar_t reg[512] = {0};
+            GetModuleFileNameW(NULL, me, MAX_PATH);
+            bool haveReg = TrayUi::GetAutoRunCommand(reg, 512);
+
+            if (autoStartMode == 1)      TrayUi::EnableAutoRun();
+            else if (autoStartMode == 2) TrayUi::DisableAutoRun();
+            haveReg = TrayUi::GetAutoRunCommand(reg, 512);
+
+            bool samePath = false;
+            if (haveReg) {
+                /* 注册表里是带引号的路径，比对时把引号剥掉 */
+                wchar_t clean[512] = {0};
+                const wchar_t *p = reg;
+                if (*p == L'"') {
+                    p++;
+                    size_t n = 0;
+                    while (*p && *p != L'"' && n < 511) clean[n++] = *p++;
+                } else {
+                    wcsncpy(clean, reg, 511);
+                }
+                samePath = (_wcsicmp(clean, me) == 0);
+            }
+
+            char out[2048];
+            size_t off = 0;
+            out[0] = '\0';
+            AppendFmt(out, sizeof(out), off, "=== 开机自启 ===\n");
+            AppendFmt(out, sizeof(out), off, "当前程序    : %ls\n", me);
+            AppendFmt(out, sizeof(out), off, "注册表条目  : %s\n",
+                      haveReg ? "已登记" : "未登记");
+            if (haveReg) AppendFmt(out, sizeof(out), off, "登记的命令  : %ls\n", reg);
+            AppendFmt(out, sizeof(out), off, "路径一致性  : %s\n",
+                      !haveReg ? "-" : (samePath ? "一致" : "**不一致**（登记的指向别的 exe，自启会启动旧路径）"));
+            AppendFmt(out, sizeof(out), off, "本次动作    : %s\n",
+                      autoStartMode == 1 ? "已开启" :
+                      autoStartMode == 2 ? "已关闭" : "仅查询，未修改");
+
+            /* 低完整性进程注册自启会导致开机后托盘图标注册失败，这必须提示 */
+            DWORD il = GetOwnIntegrityRid();
+            if (il != 0 && il < 0x2000) {
+                AppendFmt(out, sizeof(out), off,
+                          "警告        : 本进程完整性级别为 0x%04lX（Low）。\n"
+                          "              从该目录启动的程序无法注册托盘图标，开机自启也会失败。\n"
+                          "              请先把 exe 放到普通目录（用 deploy.bat）再开启自启。\n",
+                          (unsigned long)il);
+            }
+            AppendFmt(out, sizeof(out), off,
+                      "\n说明：自启项存在 HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run，\n"
+                      "      不需要管理员权限；删除该值即取消自启。\n");
+
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hOut, out, (DWORD)off, &w, NULL);
+            }
+            HANDLE hf = CreateFileW(L"mchose-tray-dump.txt", GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hf, out, (DWORD)off, &w, NULL); CloseHandle(hf);
+            }
+            return 0;
+        }
 
         /* --icon-stress <n>：图标路径 GDI 泄漏压力测试 */
         if (iconStress > 0) return IconStress(iconStress);

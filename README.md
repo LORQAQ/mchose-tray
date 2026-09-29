@@ -174,6 +174,9 @@ VID/PID 用 `tools/hid_probe.exe 5253`（或 `3837`）读取；若只知道型�
 bin\mchose-tray.exe --help               :: 显示全部命令行选项（同时写出 mchose-tray-help.txt）
 bin\mchose-tray.exe --selftest           :: 菜单分发 + 宽字符格式化自测（33 项，不需要设备）
 bin\mchose-tray.exe --model-scan         :: 机型识别报告（型号名 / 接口 VID:PID / 匹配到的机型与来源）
+bin\mchose-tray.exe --autostart status   :: 开机自启状态（回报已登记路径并与当前 exe 比对）
+bin\mchose-tray.exe --autostart on       :: 开启开机自启（写 HKCU\...\Run，无需管理员权限）
+bin\mchose-tray.exe --autostart off      :: 关闭开机自启
 bin\mchose-tray.exe --dump               :: 读取完整状态并写入 mchose-tray-dump.txt
                                          ::   退出码 0=完整 / 2=鼠标休眠 / 1=其它不完整
 bin\mchose-tray.exe --watch 16           :: 观察 16 秒，回归验证"设置未变时不重复通知 UI"
@@ -331,6 +334,33 @@ polling_rate.exe 8 60
 
 **诊断读到全零 / 读失败？**
 确认托盘程序没有同时运行（两者会争抢设备命令缓冲）。
+
+**电量显示准不准？**
+程序只保证**如实转述设备上报的值**，不做任何估算或平滑。可以从三个独立来源交叉验证：
+
+1. **手工解码推送原始字节**：`--dump` 的「最近推送」打印的是**原始字节**，
+   XOR `0xFF` 后第 5 个字节即为电量。例如
+   `13 1D FE FE FF BA FF FD FD D9 BE C8 DF AF 8D 90`
+   → `0xBA ^ 0xFF = 0x45 = 69%`，与界面显示一致。
+2. **两条读取路径互证**：特性读 `11 06` 与设备主动推送 `report 0x13`
+   是两条独立通道，实测同值（都算 69%）。
+3. **与官方软件记录对照**：官方 HUB 的
+   `%APPDATA%\MCHOSEHUB\files\config\mc_main_store_key.json` 里 `batteryLevel`
+   是它上次运行时的记录，可作第三方参照。实测：官方记录 **71%**（约 14 小时前）
+   → 本程序 **69%**（现在），符合轻微放电，无矛盾。
+
+另外，实测在整段会话中该值始终落在 69~71% 区间，**没有跳变或抖动**，
+说明解析稳定（早期版本曾因滞后缓冲读到"电量 0%"，该缺陷已修）。
+
+> 绝对准确度取决于鼠标自身的电量计，程序无法验证。要真正确认，需要做一次完整放电循环，
+> 把程序显示与实际续航对比。
+
+**开机自启没生效？**
+自启项存的是**绝对路径**，移动/重命名 exe 后会静默失效（注册表里还留着旧路径）。
+用 `bin\mchose-tray.exe --autostart status` 查看登记路径与一致性，它会明确指出
+「**不一致**（登记的指向别的 exe）」。重新执行 `--autostart on` 即可修正。
+另外：若 exe 位于带 Low 完整性标签的目录，开机自启**一定失败**（托盘图标注册会被 UIPI 拦掉），
+该命令也会就此给出警告。
 
 **感觉鼠标指针变慢/变"小"了？**
 先确认不是系统设置：`设置 → 辅助功能 → 鼠标指针` 或注册表

@@ -41,4 +41,16 @@ void CycleBatteryStyle();
 bool IsAutoRunEnabled();
 void ToggleAutoRun();
 
+/*
+ * 开机自启（写入 HKCU\...\Run，不需要管理员权限）。
+ *
+ * 为什么要单独暴露"读回已登记路径"：自启项存的是**绝对路径**，
+ * 用户一旦移动/重命名 exe，自启就会静默失效——注册表里还留着旧路径，
+ * 菜单照样打勾，但开机什么都不会发生。GetAutoRunCommand 让调用方能对比并修复。
+ */
+bool IsAutoRunEnabled();
+bool GetAutoRunCommand(wchar_t *out, int cap);
+bool EnableAutoRun();
+bool DisableAutoRun();
+
 }  // namespace TrayUi
