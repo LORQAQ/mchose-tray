@@ -1547,8 +1547,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                       (st.mouseLinked ? "已连接" : "接收器在线，鼠标休眠"));
             AppendFmt(out, sizeof(out), off, "型号      : %s\n", name[0] ? name : "(未知)");
             AppendFmt(out, sizeof(out), off, "固件版本  : %s\n", fw[0] ? fw : "(未读到)");
-            AppendFmt(out, sizeof(out), off, "连接模式  : %s\n",
-                      st.connectMode == 1 ? "2.4G 无线" : "有线/其它");
+            if (st.deviceInfoValid)
+                AppendFmt(out, sizeof(out), off, "连接模式  : %s\n",
+                          st.connectMode == 1 ? "2.4G 无线" : "有线/其它");
+            else
+                AppendFmt(out, sizeof(out), off, "连接模式  : (未读到)\n");
             if (st.batteryValid)
                 AppendFmt(out, sizeof(out), off, "电量      : %d%%%s\n",
                           st.battery, st.charging ? " (充电中)" : "");
@@ -1561,8 +1564,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 AppendFmt(out, sizeof(out), off,
                           "电量      : (未读到 —— 鼠标已连接但读不到电量，通常说明鼠标已关机；"
                           "connect 字段只表示绑定关系)\n");
-            AppendFmt(out, sizeof(out), off, "回报率    : %d Hz (档位 %d/%d)\n",
-                      st.rateHz, st.rateIndex + 1, st.rateCount);
+            if (st.settingsValid)
+                AppendFmt(out, sizeof(out), off, "回报率    : %d Hz (档位 %d/%d)\n",
+                          st.rateHz, st.rateIndex + 1, st.rateCount);
+            else
+                AppendFmt(out, sizeof(out), off, "回报率    : (未读到)\n");
             {
                 char prof8b[128] = {0};
                 WideCharToMultiByte(CP_UTF8, 0, st.modelProfile, -1, prof8b, sizeof(prof8b), NULL, NULL);
@@ -1574,11 +1580,23 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                           (unsigned)st.ifaceVid, (unsigned)st.ifacePid,
                           (unsigned)st.deviceVid, (unsigned)st.devicePid);
             }
-            AppendFmt(out, sizeof(out), off, "DPI 档位  : 第 %d 档 (活动索引 %d / 写入字段 %d)\n", st.dpiActiveIndex + 1, st.dpiActiveIndex, st.dpiIndexRaw);
-            AppendFmt(out, sizeof(out), off, "DPI 档值  : ");
-            for (int i = 0; i < 6; i++) AppendFmt(out, sizeof(out), off, "%u ", st.dpi[i]);
-            AppendFmt(out, sizeof(out), off, "\n");
-            AppendFmt(out, sizeof(out), off, "休眠      : %u 分钟\n", st.sleepMinutes);
+            /* DPI / 休眠 同样来自 12 67：读不到时不要打印默认值 0，
+             * 否则会出现"DPI 档值 0 0 0 0 0 0 / 休眠 0 分钟"这种看起来真实、
+             * 实际是空默认值的输出。 */
+            if (st.settingsValid) {
+                AppendFmt(out, sizeof(out), off,
+                          "DPI 档位  : 第 %d 档 (活动索引 %d / 写入字段 %d)\n",
+                          st.dpiActiveIndex + 1, st.dpiActiveIndex, st.dpiIndexRaw);
+                AppendFmt(out, sizeof(out), off, "DPI 档值  : ");
+                for (int i = 0; i < 6; i++) AppendFmt(out, sizeof(out), off, "%u ", st.dpi[i]);
+                AppendFmt(out, sizeof(out), off, "\n");
+                AppendFmt(out, sizeof(out), off, "休眠      : %u 分钟\n", st.sleepMinutes);
+            } else {
+                AppendFmt(out, sizeof(out), off,
+                          "DPI 档位  : (未读到)\n"
+                          "DPI 档值  : (未读到)\n"
+                          "休眠      : (未读到)\n");
+            }
             AppendFmt(out, sizeof(out), off, "推送通道  : %s，收到 %lu 条（有效 %lu 条）\n",
                       st.pushChannelOpen ? "已打开" : "未打开", st.pushReads, st.pushCount);
             AppendFmt(out, sizeof(out), off, "读失败    : %lu 次\n", st.readErrors);

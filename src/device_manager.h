@@ -28,6 +28,9 @@ struct State {
     bool  connected = false;        /* 接收器/设备句柄可用 */
     bool  mouseLinked = false;      /* 鼠标本体是否与接收器保持链路（11 03 的 connect） */
     bool  batteryValid = false;
+    /* 11 06（设备信息/电量/连接模式）是否读到过有效值。
+     * 未读到时 connectMode 会停留在默认值 0，直接显示会变成"有线/其它"，与事实不符。 */
+    bool  deviceInfoValid = false;
     /*
      * 最后一次成功读到电量的 tick（特性读或推送都算）。
      * 用途：鼠标**关机**时接收器仍报告 connect=1，若只看 connect 就会一直

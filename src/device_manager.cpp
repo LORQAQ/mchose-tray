@@ -543,6 +543,7 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 if (!newLinked) {
                     /* 鼠标不在链路：清掉会显示成 0 的过期数据 */
                     if (g_state.batteryValid) { g_state.batteryValid = false; mask |= CHANGE_BATTERY; }
+                    g_state.deviceInfoValid = false;
                     g_state.settingsValid = false;
                 }
                 Unlock();
@@ -581,6 +582,7 @@ DWORD WINAPI WorkerThread(LPVOID param)
                         g_state.battery = info.batteryLevel; mask |= CHANGE_BATTERY;
                     }
                     g_state.batteryValid = true;
+                    g_state.deviceInfoValid = true;
                     g_state.lastBatteryTick = GetTickCount();
                     bool ch = (info.chargeStatus != 0);
                     if (g_state.charging != ch) { g_state.charging = ch; mask |= CHANGE_BATTERY; }
