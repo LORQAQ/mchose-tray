@@ -116,3 +116,44 @@ git push origin v0.1.0
       `Lightweight Win32 tray console for MCHOSE gaming mice — independently reverse-engineered HID protocol`
 - [ ] 建议加 topics：`deepseek-harness` `dsh-plugin` 之外，用
       `windows` `tray` `hid` `mchose` `reverse-engineering` `win32` `cpp17`
+
+---
+
+## 用命令行 / API 发布 Release 的编码坑（已踩）
+
+本机是 **Windows PowerShell 5.1**（不是 PowerShell 7），它的 `Invoke-RestMethod`
+在发送**字符串** body 时会使用**系统 ANSI 代码页**（本机为 `gb2312`）编码，
+而 GitHub 一律按 UTF-8 解析 —— 结果是 Release 说明里的中文全部变成 `???????`
+（v1.0.0 / v1.1.0 都中过这个招，已修复）。
+
+**正确做法：把 body 以 UTF-8 字节发送**，并显式声明 charset：
+
+```powershell
+$json  = @{ tag_name='v1.2.0'; name='...'; body=$bodyText } | ConvertTo-Json -Depth 3
+$file  = "$env:TEMP\release.json"
+[System.IO.File]::WriteAllText($file, $json, (New-Object System.Text.UTF8Encoding($false)))
+
+Invoke-RestMethod -Method Post -Uri 'https://api.github.com/repos/<user>/<repo>/releases' `
+  -Headers $h -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.IO.File]::ReadAllBytes($file))     # ← 关键：传字节而不是字符串
+```
+
+上传附件同理（`-InFile` 传文件字节，不受影响）：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "https://uploads.github.com/repos/<user>/<repo>/releases/$id/assets?name=mchose-tray.exe" `
+  -Headers $h -ContentType 'application/octet-stream' -InFile 'bin\mchose-tray.exe'
+```
+
+**自检方法**：发布后重新取回 release，确认没有连续问号段、且含中文字符：
+
+```powershell
+$rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/<user>/<repo>/releases' -Headers $h
+$rels | ForEach-Object {
+  '{0} 问号段={1} 含中文={2}' -f $_.tag_name,
+    ([regex]::Matches($_.body,'\?{3,}')).Count, ($_.body -match '[\u4e00-\u9fff]')
+}
+```
+
+> 走 git 推送的文件（README 等）**没有这个问题** —— git 传的是字节，不经过 PowerShell 的字符串编码。
