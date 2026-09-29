@@ -43,6 +43,19 @@ void BuildTooltipText(const Device::State &st, wchar_t *out, int cap);
 void FormatBatteryText(const Device::State &st, wchar_t *out, int cap);
 
 /*
+ * "DPI / 回报率变化"的弹窗提醒（纯逻辑，便于自检覆盖）。
+ *
+ * ShouldNotifyExternalChange：是否值得弹。
+ *   只认 CHANGE_DPI / CHANGE_RATE 这两个细分位；
+ *   ownWriteRecent 表示刚刚由本程序下发过写命令——那种情况下界面已经提示过
+ *   "设置已下发/校验通过"，再弹一次"已切换"就是重复骚扰，因此抑制。
+ *
+ * BuildChangeNote：生成提示文本；无相关变化时返回 false。
+ */
+bool ShouldNotifyExternalChange(DWORD changeMask, bool ownWriteRecent);
+bool BuildChangeNote(DWORD changeMask, const Device::State &st, wchar_t *out, int cap);
+
+/*
  * 低电量提醒的判定逻辑（纯函数，不碰任何系统状态，因此可被 --selftest 覆盖）。
  *
  * armed 是"是否已武装"：跨过阈值时提醒一次并解除武装，避免电量停在 19% 时反复弹窗；

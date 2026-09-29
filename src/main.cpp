@@ -503,6 +503,19 @@ TrayVisualCache g_cache;
 /* 低电量提醒的“武装”状态：跨过阈值提醒一次，电量回升或开始充电后重新武装 */
 bool g_lowBattArmed = true;
 
+/*
+ * 本程序自己下发写命令的时刻。用于抑制"设置已下发"与"设置已变化"两条提示重复：
+ * 只有设备按键（或外部）引起的改变才需要弹窗，自己写引起的变化上面已经报过了。
+ */
+DWORD g_lastOwnWriteTick = 0;
+
+/*
+ * 上一次弹出"设置已变化"提示的时刻，用于防抖。
+ * 500ms 的快照节拍下，任何一次异常读值（滞后缓冲）都可能造成相邻两次快照不一致，
+ * 从而连弹两次；200ms 只够合并"同一次按键产生的重复发布"，不会拖慢正常按键。
+ */
+DWORD g_lastChangeNotifyTick = 0;
+
 HICON      g_hIcon = NULL;
 UINT       g_wmTaskbarCreated = 0;
 bool       g_osdOnConnect = true;
@@ -743,15 +756,21 @@ void ShowMenu(HWND hWnd)
         TrayUi::ShowOsd(Device::GetState(), NULL);
         return;
     case ACT_SET_RATE:
-        if (d.arg >= 0 && d.arg < kRateCount) Device::RequestSetPollingRate(kRateChoices[d.arg]);
+        if (d.arg >= 0 && d.arg < kRateCount) {
+            g_lastOwnWriteTick = GetTickCount();      /* 抑制随之而来的"已变化"弹窗 */
+            Device::RequestSetPollingRate(kRateChoices[d.arg]);
+        }
         return;
     case ACT_SLEEP_OFF:
+        g_lastOwnWriteTick = GetTickCount();
         Device::RequestSetSleep(false, 0);
         return;
     case ACT_SET_SLEEP:
+        g_lastOwnWriteTick = GetTickCount();
         Device::RequestSetSleep(true, d.arg);
         return;
     case ACT_SET_DPI:
+        g_lastOwnWriteTick = GetTickCount();
         Device::RequestSwitchDpiStage(d.arg);
         return;
     case ACT_NONE:
@@ -786,7 +805,37 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
 
-        RefreshTray((mask & Device::CHANGE_SETTINGS) != 0, newConn, note);
+        /*
+         * 鼠标按键改了 DPI / 回报率时弹一次提示。
+         *
+         * 与上面的命令结果反馈互斥：自己刚下发过写命令时抑制（ownWriteRecent），
+         * 否则用户会先看到"设置已下发"、紧接着又看到"已切换"，属于重复打扰。
+         * 抑制窗口 6 秒，覆盖写命令落盘 + 设备同步的时间。
+         */
+        wchar_t changeNote[160] = {0};
+        {
+            DWORD nowTick = GetTickCount();
+            bool ownRecent = (g_lastOwnWriteTick != 0) &&
+                             (nowTick - g_lastOwnWriteTick < 6000);
+            bool debounced = (g_lastChangeNotifyTick != 0) &&
+                             (nowTick - g_lastChangeNotifyTick < 200);
+            if (TrayUi::ShouldNotifyExternalChange(mask, ownRecent) && !debounced) {
+                Device::State cur = Device::GetState();
+                if (TrayUi::BuildChangeNote(mask, cur, changeNote, 160))
+                    g_lastChangeNotifyTick = nowTick;
+                else
+                    changeNote[0] = L'\0';
+            }
+        }
+
+        /*
+         * 变化提示必须交给 RefreshTray 一起弹，不能自己先弹一次：
+         * CHANGE_DPI / CHANGE_RATE 同时包含 CHANGE_SETTINGS 位，而 RefreshTray 对
+         * CHANGE_SETTINGS 本来就会弹一次 OSD —— 自己先弹的话会立刻被普通状态覆盖，
+         * 用户只看到一闪。命令结果（note）优先级最高，其次才是变化提示。
+         */
+        RefreshTray((mask & Device::CHANGE_SETTINGS) != 0, newConn,
+                    note != NULL ? note : (changeNote[0] != L'\0' ? changeNote : NULL));
         return 0;
     }
     case WM_APP_TRAY:
@@ -1273,6 +1322,49 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                           np, badp == 0 ? "全部符合预期" : "**有失败**");
             }
 
+            /* DPI / 回报率变化提醒的判定自检。
+             * 重点在"自己写引起的变化不弹"和"只认细分位"两条规则上。 */
+            {
+                struct CCase { DWORD mask; bool ownWrite; bool want; const char *tag; };
+                const CCase cc[] = {
+                    { Device::CHANGE_DPI,                         false, true,  "DPI 变化" },
+                    { Device::CHANGE_RATE,                        false, true,  "回报率变化" },
+                    { Device::CHANGE_DPI | Device::CHANGE_RATE,   false, true,  "两者同时" },
+                    { Device::CHANGE_DPI,                         true,  false, "自己写引起 -> 抑制" },
+                    { Device::CHANGE_BATTERY,                     false, false, "仅电量 -> 不弹" },
+                    { Device::CHANGE_SETTINGS,                    false, false, "仅粗粒度设置 -> 不弹" },
+                    { Device::CHANGE_BATTERY | Device::CHANGE_DPI,false, true,  "电量+DPI -> 弹" },
+                    { 0,                                          false, false, "无变化 -> 不弹" },
+                };
+                const int nc = (int)(sizeof(cc) / sizeof(cc[0]));
+                int badc = 0;
+                for (int i = 0; i < nc; i++) {
+                    if (TrayUi::ShouldNotifyExternalChange(cc[i].mask, cc[i].ownWrite) != cc[i].want) {
+                        badc++;
+                        AppendFmt(out, sizeof(out), off, "  变化提醒 %s -> 不符预期\n", cc[i].tag);
+                    }
+                }
+                /* 文本生成：DPI 用例应含档位与 DPI 值；回报率用例应含 Hz；无关掩码返回 false */
+                Device::State s;
+                s.dpiActiveIndex = 2;
+                s.dpi[2] = 3200;
+                s.rateHz = 2000;
+                wchar_t note[160] = {0};
+                bool okDpi = TrayUi::BuildChangeNote(Device::CHANGE_DPI, s, note, 160) &&
+                             wcsstr(note, L"第 3 档") && wcsstr(note, L"3200");
+                bool okRate = TrayUi::BuildChangeNote(Device::CHANGE_RATE, s, note, 160) &&
+                              wcsstr(note, L"2000 Hz");
+                bool okNone = !TrayUi::BuildChangeNote(Device::CHANGE_BATTERY, s, note, 160);
+                if (!okDpi)  { badc++; AppendFmt(out, sizeof(out), off, "  DPI 提示文本不符预期\n"); }
+                if (!okRate) { badc++; AppendFmt(out, sizeof(out), off, "  回报率提示文本不符预期\n"); }
+                if (!okNone) { badc++; AppendFmt(out, sizeof(out), off, "  无关变化却生成了文本\n"); }
+                checks += nc + 3;
+                fails  += badc;
+                AppendFmt(out, sizeof(out), off,
+                          "  DPI/回报率变化提醒 %d 个用例 -> %s\n",
+                          nc + 3, badc == 0 ? "全部符合预期" : "**有失败**");
+            }
+
             AppendFmt(out, sizeof(out), off, "结果: %d 项检查，%d 项失败 —— %s\n",
                       checks, fails, fails == 0 ? "全部通过" : "存在缺陷");
 
@@ -1296,7 +1388,32 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 Device::State s = Device::GetState();
                 if (s.connected && s.settingsValid) break;
             }
-            Sleep((DWORD)watchSec * 1000);
+            /* 以 100ms 粒度跟踪细分变化计数，记录每次变化的相对时刻。
+             * 这样"按键到弹窗有多延迟"可以被量出来，而不是靠感觉猜。 */
+            unsigned long prevRate = Device::GetState().rateChangeCount;
+            unsigned long prevDpi  = Device::GetState().dpiChangeCount;
+            ULONGLONG t0 = GetTickCount64();
+            char events[1024];
+            size_t eoff = 0;
+            events[0] = '\0';
+
+            for (int tick = 0; tick < watchSec * 10; tick++) {
+                Sleep(100);
+                Device::State s = Device::GetState();
+                if (s.rateChangeCount != prevRate) {
+                    prevRate = s.rateChangeCount;
+                    AppendFmt(events, sizeof(events), eoff,
+                              "    %5llu ms  回报率变化 -> %d Hz\n",
+                              (unsigned long long)(GetTickCount64() - t0), s.rateHz);
+                }
+                if (s.dpiChangeCount != prevDpi) {
+                    prevDpi = s.dpiChangeCount;
+                    unsigned dv = (s.dpiActiveIndex < 6) ? s.dpi[s.dpiActiveIndex] : 0;
+                    AppendFmt(events, sizeof(events), eoff,
+                              "    %5llu ms  DPI 变化   -> 第 %d 档 · %u\n",
+                              (unsigned long long)(GetTickCount64() - t0), s.dpiActiveIndex + 1, dv);
+                }
+            }
             Device::State st = Device::GetState();
 
             char out[1024];
@@ -1304,11 +1421,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 "=== --watch %d 秒观察 ===\n"
                 "连接      : %s   电量: %d%%   回报率: %d Hz   推送: %lu 条\n"
                 "总发布次数: %lu   其中 CHANGE_SETTINGS: %lu\n"
+                "细分变化  : 回报率 %lu 次   DPI %lu 次   (鼠标按键/外部改动应为 >0)\n"
+                "%s"
                 "判定      : %s\n",
                 watchSec, st.connected ? "已连接" : "未连接", st.battery, st.rateHz,
                 st.pushReads, st.totalPublishes, st.settingsPublishes,
-                (st.settingsPublishes <= 2)
-                    ? "通过（设置未变化时不重复通知，OSD 不会周期性弹窗）"
+                st.rateChangeCount, st.dpiChangeCount, events,
+                (st.settingsPublishes <= 2 + st.rateChangeCount + st.dpiChangeCount)
+                    ? "通过（无外部改动时不重复通知；本次由回报率/DPI 变化解释掉的发布已扣除）"
                     : "失败（仍在周期性发布 CHANGE_SETTINGS）");
 
             HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -1597,6 +1717,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                           "DPI 档值  : (未读到)\n"
                           "休眠      : (未读到)\n");
             }
+            AppendFmt(out, sizeof(out), off,
+                      "最近变化  : 0x%02lX%s%s%s%s%s\n",
+                      (unsigned long)st.lastChangeMask,
+                      (st.lastChangeMask & Device::CHANGE_CONNECTED) ? " 连接" : "",
+                      (st.lastChangeMask & Device::CHANGE_BATTERY)   ? " 电量" : "",
+                      (st.lastChangeMask & Device::CHANGE_SETTINGS)  ? " 设置" : "",
+                      (st.lastChangeMask & Device::CHANGE_RATE)      ? " 回报率" : "",
+                      (st.lastChangeMask & Device::CHANGE_DPI)       ? " DPI" : "");
             AppendFmt(out, sizeof(out), off, "推送通道  : %s，收到 %lu 条（有效 %lu 条）\n",
                       st.pushChannelOpen ? "已打开" : "未打开", st.pushReads, st.pushCount);
             AppendFmt(out, sizeof(out), off, "读失败    : %lu 次\n", st.readErrors);

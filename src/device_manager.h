@@ -22,6 +22,13 @@ enum : DWORD {
     CHANGE_BATTERY   = 0x02,
     CHANGE_SETTINGS  = 0x04,   /* DPI / 回报率 / 休眠 等 */
     CHANGE_VERSION   = 0x08,
+    /*
+     * 细分位：仅当**值真的变了**才置位，用于"鼠标按键改了 DPI / 回报率"的弹窗提醒。
+     * 与 CHANGE_SETTINGS 的区别：后者是"设置区有变化"的粗粒度通知（含档值编辑、
+     * 休眠时间等），不能直接拿来判断是否该弹"DPI/回报率已切换"。
+     */
+    CHANGE_RATE      = 0x10,   /* 活动回报率档位变化（通常来自鼠标按键） */
+    CHANGE_DPI       = 0x20,   /* 活动 DPI 档位变化（通常来自鼠标按键） */
 };
 
 struct State {
@@ -38,6 +45,13 @@ struct State {
      * 界面改为显示"未知"，而不是继续报一个可能早已过期的数字。
      */
     unsigned long lastBatteryTick = 0;
+
+    /* 最近一次发布的变化掩码，仅用于诊断（可在 --dump 里核对细分位是否按预期置位） */
+    DWORD lastChangeMask = 0;
+
+    /* 细分变化计数：用于 --watch 端到端验证"鼠标按键改 DPI/回报率能被检出" */
+    unsigned long rateChangeCount = 0;
+    unsigned long dpiChangeCount  = 0;
     int   battery = 0;              /* 0..100 */
     bool  charging = false;
     unsigned char connectMode = 0;  /* 1 = 2.4G 无线 */

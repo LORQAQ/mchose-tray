@@ -603,16 +603,57 @@ DWORD WINAPI WorkerThread(LPVOID param)
             }
         }
 
-        if ((lastSetTick == 0 || now - lastSetTick >= 9000) && linked) {
+        /* 节拍 500 毫秒（原 3 秒，再原 9 秒）。
+         *
+         * 这是"按了 DPI 键要立刻看到提示"的直接取舍：活动档位只能靠 12 67 读出来，
+         * 快照节拍就是提示延迟的下限。500ms 意味着每秒 2 次特性报文。
+         * 实测 CPU 仍然测不出（一次特性事务约 0.5ms），所以用这点流量换即时反馈是划算的。
+         * 电量等不需要实时的项仍按 3 秒节拍读（11 06），不受影响。 */
+        if ((lastSetTick == 0 || now - lastSetTick >= 500) && linked) {
             lastSetTick = now;
             McHose::AllSettings s;
-            if (McHose::ReadAllSettings(hFeature, s, 0)) {
+            bool okRead = McHose::ReadAllSettings(hFeature, s, 0);
+
+            /*
+             * 关键：周期快照也必须"丢弃一次再读"。
+             *
+             * 这颗芯片的特性读会返回**上一条命令的滞后缓冲**。写后校验早就用了这个手法，
+             * 但周期快照原先只读一次——在 500ms 节拍下，每隔一次读到的就是旧值，
+             * 于是"变化"被反复检出：实测按 4~5 次 DPI 键竟检出 9 次变化，
+             * 且档位严格在第 1/第 2 档之间交替翻动（弹窗先显示新值、紧接又翻回旧值，
+             * 观感就是"卡"甚至"弹错了"）。
+             *
+             * 代价是每秒多 2 次特性报文（CPU 实测仍测不出），
+             * 换来快照必定是最新值，不会因滞后缓冲产生虚假变化。
+             */
+            if (okRead) {
+                McHose::AllSettings s2;
+                if (McHose::ReadAllSettings(hFeature, s2, 0)) s = s2;
+            }
+
+            if (okRead) {
                 /* 只在设置真的变化时发布 CHANGE_SETTINGS。
                  * 曾经无条件发布，导致 UI 每 9 秒弹一次 OSD 悬浮窗。 */
                 DWORD mask = 0;
                 Lock();
                 int newRateIdx = (int)s.gRateIndex;
                 int newRateHz  = McHose::RateIndexToHz(s.gRateIndex, g_state.rateCount);
+
+                /* 细分位只在"本来就有有效设置、且值确实变了"时置位。
+                 * 首次读到设置不算变化——否则程序一启动就会弹一次"已切换"。 */
+                /*
+                 * 判定用**两个索引字段任一变化**，不能只盯活动字段。
+                 * 实测：0x40/0x41 落点字段（usbDpiIndex/usbRateIndex）立即变化，
+                 * 而活动字段（gDpiIndex/gRateIndex）要等设备同步才跟随——
+                 * 只比较活动字段会让提示延迟数秒。任一字段变了就说明档位确实动了。
+                 */
+                bool rateChanged = g_state.settingsValid &&
+                                   (g_state.rateIndex != newRateIdx || g_state.rateHz != newRateHz ||
+                                    g_state.writeRateIndex != (int)s.usbRateIndex);
+                bool dpiChanged  = g_state.settingsValid &&
+                                   (g_state.dpiActiveIndex != s.gDpiIndex ||
+                                    g_state.dpiIndexRaw != s.usbDpiIndex);
+
                 if (!g_state.settingsValid ||
                     g_state.rateIndex != newRateIdx ||
                     g_state.rateHz != newRateHz ||
@@ -621,6 +662,8 @@ DWORD WINAPI WorkerThread(LPVOID param)
                     g_state.dpiActiveIndex != s.gDpiIndex ||
                     g_state.sleepMinutes != s.sleep)
                     mask |= CHANGE_SETTINGS;
+                if (rateChanged) mask |= CHANGE_RATE;
+                if (dpiChanged)  mask |= CHANGE_DPI;
                 for (int i = 0; i < 6; i++) {
                     if (g_state.dpi[i] != s.dpi[i]) { mask |= CHANGE_SETTINGS; break; }
                 }
@@ -633,6 +676,11 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 g_state.dpiActiveIndex  = s.gDpiIndex;
                 g_state.sleepMinutes    = s.sleep;
                 for (int i = 0; i < 6; i++) g_state.dpi[i] = s.dpi[i];
+                if (mask != 0) {
+                    g_state.lastChangeMask = mask;
+                    if (mask & CHANGE_RATE) g_state.rateChangeCount++;
+                    if (mask & CHANGE_DPI)  g_state.dpiChangeCount++;
+                }
                 Unlock();
 
                 if (mask != 0) Publish(mask);

@@ -498,6 +498,34 @@ HICON CreateBatteryIcon(const Device::State &st, int style)
     return CreateBatteryIconSized(st, style, GetSystemMetrics(SM_CXSMICON));
 }
 
+bool ShouldNotifyExternalChange(DWORD changeMask, bool ownWriteRecent)
+{
+    if (ownWriteRecent) return false;                 /* 自己写的，界面已提示过 */
+    return (changeMask & (Device::CHANGE_DPI | Device::CHANGE_RATE)) != 0;
+}
+
+bool BuildChangeNote(DWORD changeMask, const Device::State &st, wchar_t *out, int cap)
+{
+    if (out == NULL || cap <= 0) return false;
+    out[0] = L'\0';
+
+    bool dpi  = (changeMask & Device::CHANGE_DPI) != 0;
+    bool rate = (changeMask & Device::CHANGE_RATE) != 0;
+    if (!dpi && !rate) return false;
+
+    unsigned dpiVal = (st.dpiActiveIndex < 6) ? st.dpi[st.dpiActiveIndex] : 0;
+
+    if (dpi && rate)
+        swprintf(out, (size_t)cap, L"DPI 第 %d 档 · %u   ｜   回报率 %d Hz",
+                 st.dpiActiveIndex + 1, dpiVal, st.rateHz);
+    else if (dpi)
+        swprintf(out, (size_t)cap, L"DPI 已切换为第 %d 档 · %u",
+                 st.dpiActiveIndex + 1, dpiVal);
+    else
+        swprintf(out, (size_t)cap, L"回报率已切换为 %d Hz", st.rateHz);
+    return true;
+}
+
 void FormatBatteryText(const Device::State &st, wchar_t *out, int cap)
 {
     if (out == NULL || cap <= 0) return;
