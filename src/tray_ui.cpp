@@ -25,6 +25,8 @@ HWND      g_hOsd = NULL;
 HFONT     g_hFont1 = NULL;
 HFONT     g_hFont2 = NULL;
 int       g_osdAlpha = 0;
+int       g_osdDpi = 0;          /* 当前 OSD 使用的 DPI，0 表示尚未初始化 */
+double    g_osdScale = 1.0;      /* dpi / 96，用于缩放 OSD 布局与字号 */
 int       g_osdW = 0, g_osdH = 0;
 wchar_t   g_osdLine[3][160];
 
@@ -298,17 +300,28 @@ void OsdPaint(HWND hWnd)
 
     SetBkMode(mem, TRANSPARENT);
     SetTextColor(mem, RGB(240, 240, 240));
+
+    /* 按 DPI 缩放布局。程序声明了 Per-Monitor V2 感知，若这里写死像素，
+     * 在 125%/150%/200% 缩放下悬浮窗会显得偏小、文字还可能被裁掉。 */
+    const int pad  = (int)(14 * g_osdScale + 0.5);
+    const int y1   = (int)(10 * g_osdScale + 0.5);
+    const int y2   = (int)(38 * g_osdScale + 0.5);
+    const int y3   = (int)(60 * g_osdScale + 0.5);
+    const int h1   = (int)(26 * g_osdScale + 0.5);
+    const int h2   = (int)(22 * g_osdScale + 0.5);
+    const int h3   = (int)(20 * g_osdScale + 0.5);
+
     HGDIOBJ of = SelectObject(mem, g_hFont1);
-    RECT r1 = { 14, 10, g_osdW - 14, 10 + 26 };
+    RECT r1 = { pad, y1, g_osdW - pad, y1 + h1 };
     DrawTextW(mem, g_osdLine[0], -1, &r1, DT_LEFT | DT_SINGLELINE | DT_NOCLIP);
 
     SelectObject(mem, g_hFont2);
     SetTextColor(mem, RGB(180, 200, 230));
-    RECT r2 = { 14, 38, g_osdW - 14, 38 + 22 };
+    RECT r2 = { pad, y2, g_osdW - pad, y2 + h2 };
     DrawTextW(mem, g_osdLine[1], -1, &r2, DT_LEFT | DT_SINGLELINE | DT_NOCLIP);
 
     SetTextColor(mem, RGB(150, 160, 175));
-    RECT r3 = { 14, 60, g_osdW - 14, 60 + 20 };
+    RECT r3 = { pad, y3, g_osdW - pad, y3 + h3 };
     DrawTextW(mem, g_osdLine[2], -1, &r3, DT_LEFT | DT_SINGLELINE | DT_NOCLIP);
 
     SelectObject(mem, of);
@@ -359,6 +372,56 @@ LRESULT CALLBACK OsdProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     return DefWindowProcW(hWnd, msg, wp, lp);
+}
+
+/* 当前 OSD 窗口所在显示器的 DPI。
+ * GetDpiForWindow 需要 Win10 1607+，动态解析以免在旧系统上加载失败；
+ * 拿不到就退化为主显示器 DPI。 */
+int CurrentOsdDpi()
+{
+    typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+    static PFN_GetDpiForWindow fn = NULL;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        HMODULE u32 = GetModuleHandleW(L"user32.dll");
+        if (u32) fn = (PFN_GetDpiForWindow)(void *)GetProcAddress(u32, "GetDpiForWindow");
+    }
+    if (fn != NULL && g_hOsd != NULL) {
+        UINT d = fn(g_hOsd);
+        if (d >= 72 && d <= 480) return (int)d;
+    }
+    HDC dc = GetDC(NULL);
+    int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    if (dc) ReleaseDC(NULL, dc);
+    return (dpi > 0) ? dpi : 96;
+}
+
+/* 目标 DPI 变化时重建字体并调整窗口尺寸。
+ * 调用时机：先把 OSD 移到目标显示器（窗口 DPI 随之更新），再调用本函数。 */
+void EnsureOsdMetrics()
+{
+    int dpi = CurrentOsdDpi();
+    if (dpi == g_osdDpi && g_hFont1 != NULL && g_hFont2 != NULL) return;
+
+    g_osdDpi = dpi;
+    g_osdScale = (double)dpi / 96.0;
+
+    g_osdW = (int)(300 * g_osdScale + 0.5);
+    g_osdH = (int)(92 * g_osdScale + 0.5);
+
+    if (g_hFont1) { DeleteObject(g_hFont1); g_hFont1 = NULL; }
+    if (g_hFont2) { DeleteObject(g_hFont2); g_hFont2 = NULL; }
+    g_hFont1 = CreateFontW(-(int)(20 * g_osdScale + 0.5), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    g_hFont2 = CreateFontW(-(int)(15 * g_osdScale + 0.5), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+
+    if (g_hOsd != NULL)
+        SetWindowPos(g_hOsd, NULL, 0, 0, g_osdW, g_osdH,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void PositionOsd()
@@ -420,13 +483,19 @@ void Cleanup()
     if (g_hFont2) { DeleteObject(g_hFont2); g_hFont2 = NULL; }
 }
 
-HICON CreateBatteryIcon(const Device::State &st, int style)
+HICON CreateBatteryIconSized(const Device::State &st, int style, int size)
 {
-    int size = GetSystemMetrics(SM_CXSMICON);
     if (size < 16) size = 16;
     if (size > 64) size = 64;
 
     return (style == 1) ? DrawNumber(st, size) : DrawCapsule(st, size);
+}
+
+HICON CreateBatteryIcon(const Device::State &st, int style)
+{
+    /* 尺寸必须取自系统：高 DPI 下 SM_CXSMICON 会是 20/24/32，
+     * 写死 16 会得到一张被系统拉伸放大的糊图。 */
+    return CreateBatteryIconSized(st, style, GetSystemMetrics(SM_CXSMICON));
 }
 
 void BuildTooltipText(const Device::State &st, wchar_t *out, int cap)
@@ -449,7 +518,7 @@ void BuildTooltipText(const Device::State &st, wchar_t *out, int cap)
                  st.charging ? L"（充电中）" : L"",
                  ModeText(st),
                  rate,
-                 st.dpiIndexRaw + 1);
+                 st.dpiActiveIndex + 1);
     }
 }
 
@@ -468,8 +537,8 @@ void BuildOsdLines(const Device::State &st, const wchar_t *note,
         swprintf(out[1], 160, L"鼠标休眠中");
         swprintf(out[2], 160, L"接收器正常，移动鼠标即可唤醒");
     } else if (st.connected && st.settingsValid) {
-        unsigned dpiVal = (st.dpiIndexRaw < 6) ? st.dpi[st.dpiIndexRaw] : 0;
-        swprintf(out[1], 160, L"第 %d 档 · %u DPI", st.dpiIndexRaw + 1, dpiVal);
+        unsigned dpiVal = (st.dpiActiveIndex < 6) ? st.dpi[st.dpiActiveIndex] : 0;
+        swprintf(out[1], 160, L"第 %d 档 · %u DPI", st.dpiActiveIndex + 1, dpiVal);
         swprintf(out[2], 160, L"电量 %d%%%ls · %ls · 固件 %ls",
                  st.batteryValid ? st.battery : 0,
                  st.charging ? L" ⚡" : L"",
@@ -506,7 +575,12 @@ void ShowOsd(const Device::State &st, const wchar_t *note)
 
     BuildOsdLines(st, note, g_osdLine);
 
+    /* 顺序有意义：先把窗口移到目标显示器，GetDpiForWindow 才会返回该显示器的 DPI，
+     * 据此重建字体与尺寸；尺寸变了再重新定位一次。 */
     PositionOsd();
+    EnsureOsdMetrics();
+    PositionOsd();
+
     KillTimer(g_hOsd, TIMER_OSD_HIDE);
     KillTimer(g_hOsd, TIMER_OSD_FADE);
     OsdSetAlpha(238);

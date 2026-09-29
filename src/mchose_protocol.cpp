@@ -51,8 +51,22 @@ static void dbgBytes(const char *tag, const unsigned char *p, int n)
 
 /*
  * 枚举 HID 顶层集合，找到 UsagePage = 0xFF01 / Usage = 0x0001 且 VID/PID 匹配的集合。
- * 同时接受 2.4G 接收器（0x1021）与有线（0x1020）两种 PID，便于同一份代码兼容两种模式。
+ * 厂商与机型判定交给 model_db：接受任何已知迈从 VID（实测 0x5253、社区 0x3837），
+ * PID 不再写死——不同机型/不同连接模式枚举出的 PID 各不相同，且 PID 会跨机型复用。
  */
+/* 最近一次成功匹配的控制集合的接口 VID/PID。
+ * 机型识别按它查表——不是 11 06 回报的"机体 PID"（那是设备类型码，A7 Pro 报 0x0010）。 */
+static unsigned short g_lastIfaceVid = 0;
+static unsigned short g_lastIfacePid = 0;
+
+bool GetLastOpenedInterfaceIds(unsigned short *vid, unsigned short *pid)
+{
+    if (g_lastIfaceVid == 0) return false;
+    if (vid) *vid = g_lastIfaceVid;
+    if (pid) *pid = g_lastIfacePid;
+    return true;
+}
+
 HANDLE OpenControlDeviceEx(bool overlapped, char *outPath, int outPathLen)
 {
     GUID hidGuid;
@@ -85,7 +99,10 @@ HANDLE OpenControlDeviceEx(bool overlapped, char *outPath, int outPathLen)
         /* 先用路径粗筛，避免打开无关设备 */
         char path[1024];
         w2a(detail->DevicePath, path, sizeof(path));
-        if (strstr(path, "vid_5253") == NULL) { free(detail); continue; }
+        /* 路径粗筛：只打开迈从（Realtek 方案）的 HID 集合。
+         * 实测 A7 Pro 是 vid_5253，社区记录 A7 V2 Ultra / K7 Ultra 是 vid_3837，
+         * 只认 0x5253 会整条新产品线都发现不了。 */
+        if (!PathLooksLikeMchose(detail->DevicePath)) { free(detail); continue; }
 
         HANDLE h = CreateFileW(detail->DevicePath, GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
@@ -105,13 +122,15 @@ HANDLE OpenControlDeviceEx(bool overlapped, char *outPath, int outPathLen)
         bool matched = false;
 
         if (HidD_GetAttributes(h, &attr) &&
-            attr.VendorID == kVendorId &&
-            (attr.ProductID == kPidDongle || attr.ProductID == kPidWired) &&
+            IsKnownMchoseVid(attr.VendorID) &&
             HidD_GetPreparsedData(h, &pp)) {
 
             if (HidP_GetCaps(pp, &caps) == HIDP_STATUS_SUCCESS &&
                 caps.UsagePage == kUsagePage && caps.Usage == kUsage) {
                 matched = true;
+                /* 记录接口 VID/PID：机型识别按它查表（不是 11 06 的机体 PID） */
+                g_lastIfaceVid = attr.VendorID;
+                g_lastIfacePid = attr.ProductID;
                 /* 该集合必须能容纳 0x12 的 65 字节帧，否则不是我们要的控制集合。
                  * 用 > 而非 >=：同长度时取先枚举到的那个，选中结果不依赖枚举顺序。 */
                 if ((int)caps.FeatureReportByteLength >= 1 + kReport12Payload &&
@@ -418,11 +437,12 @@ int HzToRateIndex(int hz, int rateCount)
     return -1;
 }
 
-int RateCountForMode(unsigned char connectMode)
+int RateCountForMode(unsigned char connectMode, const ModelCaps &caps)
 {
-    /* connectMode == 1 为 2.4G 无线（A7 Pro 支持 125..8000 共 6 档）
-     * 其余（有线）按官方 rateMap[1000] = 125/500/1000 共 3 档 */
-    return (connectMode == 1) ? 6 : 3;
+    /* connectMode == 1 为 2.4G 无线（多数机型支持 125..8000 共 6 档）
+     * 其余（有线）按官方 rateMap[1000] = 125/500/1000 共 3 档。
+     * 档位数取自机型库（未知机型回落为 6 / 3）。 */
+    return (connectMode == 1) ? caps.rateCountWireless : caps.rateCountWired;
 }
 
 }  // namespace McHose

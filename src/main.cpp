@@ -214,13 +214,18 @@ int IconPreview(const wchar_t *outPath)
     const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
     const int scale = 8, gap = 4, pad = 6;
 
+    /* 覆盖常见托盘图标尺寸：100% = 16，125% = 20，150% = 24，200% = 32 */
+    const int kSizes[] = { 16, 20, 24, 32 };
+    const int nSizes = (int)(sizeof(kSizes) / sizeof(kSizes[0]));
+
+    const int cellSize = kSizes[nSizes - 1];      /* 格子按最大尺寸留足空间 */
     int size = GetSystemMetrics(SM_CXSMICON);
     if (size < 16) size = 16;
     if (size > 64) size = 64;
 
-    int cellW  = size * scale;
+    int cellW  = cellSize * scale;
     int sheetW = pad * 2 + nCases * (cellW + gap);
-    int sheetH = pad * 2 + 2 * (cellW + gap);
+    int sheetH = pad * 2 + (nSizes * 2) * (cellW + gap);
 
     HDC screen = GetDC(NULL);
     HDC mem = CreateCompatibleDC(screen);
@@ -234,27 +239,36 @@ int IconPreview(const wchar_t *outPath)
     DeleteObject(bg);
 
     printf("=== 图标预览 ===\n");
-    printf("系统托盘图标尺寸 SM_CXSMICON = %d，放大 %d 倍\n", size, scale);
+    printf("当前系统托盘图标尺寸 SM_CXSMICON = %d，放大 %d 倍\n", size, scale);
     printf("列顺序: ");
     for (int i = 0; i < nCases; i++) printf("%s ", cases[i].tag);
-    printf("\n行顺序: 样式0(胶囊), 样式1(数字)\n\n");
+    printf("\n行顺序（每行 = 一种托盘尺寸 × 两种样式）:\n");
+    for (int s = 0; s < nSizes; s++) {
+        printf("  第 %d 行: %2d px 胶囊   第 %d 行: %2d px 数字\n",
+               s * 2 + 1, kSizes[s], s * 2 + 2, kSizes[s]);
+    }
+    printf("\n");
 
-    for (int style = 0; style < 2; style++) {
-        for (int i = 0; i < nCases; i++) {
-            Device::State st;
-            st.connected   = cases[i].connected;
-            st.mouseLinked = cases[i].linked;
-            st.batteryValid = cases[i].valid;
-            st.battery     = cases[i].battery;
-            st.charging    = cases[i].charging;
-            st.connectMode = 1;
-            wcscpy(st.modelName, L"A7 Pro");
-            wcscpy(st.firmware, L"5.4.7.4");
+    for (int s = 0; s < nSizes; s++) {
+        for (int style = 0; style < 2; style++) {
+            int row = s * 2 + style;
+            for (int i = 0; i < nCases; i++) {
+                Device::State st;
+                st.connected   = cases[i].connected;
+                st.mouseLinked = cases[i].linked;
+                st.batteryValid = cases[i].valid;
+                st.battery     = cases[i].battery;
+                st.charging    = cases[i].charging;
+                st.connectMode = 1;
+                wcscpy(st.modelName, L"A7 Pro");
+                wcscpy(st.firmware, L"5.4.7.4");
 
-            HICON ic = TrayUi::CreateBatteryIcon(st, style);
-            BlitIconToSheet(mem, ic, pad + i * (cellW + gap),
-                            pad + style * (cellW + gap), scale);
-            if (ic) DestroyIcon(ic);
+                /* 强制指定尺寸并放大，用来核对高 DPI 下的排版是否符合预期 */
+                HICON ic = TrayUi::CreateBatteryIconSized(st, style, kSizes[s]);
+                BlitIconToSheet(mem, ic, pad + i * (cellW + gap),
+                                pad + row * (cellW + gap), scale);
+                if (ic) DestroyIcon(ic);
+            }
         }
     }
 
@@ -604,18 +618,27 @@ void ShowMenu(HWND hWnd)
     }
     AppendMenuW(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hSleep, L"休眠时间");
 
-    /* DPI 档位 */
-    for (int i = 0; i < 6; i++) {
+    /* DPI 档位。
+     * 档位数不再是固定 6：不同机型档位数不同（取自机型库，未知机型回落 6）。
+     * 另外跳过档值为 0 的档——档值由设备回读而来，未使用的档位返回 0
+     * （合法 DPI 不可能为 0，官方最小值为 100），这样界面能自动贴合真实档数。 */
+    int stageCount = (st.modelDpiStages > 0 && st.modelDpiStages < 6) ? st.modelDpiStages : 6;
+    int shownStages = 0;
+    for (int i = 0; i < stageCount; i++) {
+        if (st.settingsValid && st.dpi[i] == 0) continue;   /* 该档位不存在 */
         wchar_t label[48];
         if (st.settingsValid)
             swprintf(label, 48, L"第 %d 档 · %u DPI", i + 1, st.dpi[i]);
         else
             swprintf(label, 48, L"第 %d 档", i + 1);
         UINT flags = MF_STRING;
-        if (st.settingsValid && st.dpiIndexRaw == i) flags |= MF_CHECKED;
+        if (st.settingsValid && st.dpiActiveIndex == i) flags |= MF_CHECKED;
         if (!st.connected || !st.settingsValid) flags |= MF_GRAYED;
         AppendMenuW(hDpi, flags, IDM_DPI(i), label);
+        shownStages++;
     }
+    if (shownStages == 0)
+        AppendMenuW(hDpi, MF_STRING | MF_GRAYED, IDM_DPI(0), L"(档位未知)");
     AppendMenuW(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hDpi, L"DPI 档位");
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -774,6 +797,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
         bool dump = false;
         bool selftest = false;
         int  setRateHz = 0;
+        int  setDpiStage = -1;
+        bool modelScan = false;
         int  watchSec = 0;
         bool doPreview = false;
         int  iconStress = 0;
@@ -791,6 +816,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                 doPreview = true;
                 wcsncpy(previewPath, argv[i + 1], 511);
                 previewPath[511] = L'\0';
+            }
+            else if (wcscmp(argv[i], L"--model-scan") == 0) {
+                modelScan = true;
+            }
+            else if (wcscmp(argv[i], L"--set-dpi-stage") == 0 && i + 1 < argc) {
+                setDpiStage = _wtoi(argv[i + 1]);
+                if (setDpiStage < 0) setDpiStage = 0;
+                if (setDpiStage > 5) setDpiStage = 5;
             }
             else if (wcscmp(argv[i], L"--set-rate") == 0 && i + 1 < argc) {
                 dump = true;
@@ -960,8 +993,148 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             return (st.settingsPublishes <= 2) ? 0 : 1;
         }
 
-        if (dump && setRateHz > 0) {
+        /*
+         * --model-scan：机型识别报告。
+         *
+         * 迈从不同机型 VID/PID 不同（实测 A7 Pro = 5253:1021，社区记录
+         * A7 V2 Ultra = 3837:100B、K7 Ultra = 3837:1001），且 PID 会跨机型复用
+         * （0x1020 在 A7 Pro 是有线、在 L7 Pro 是无线）。因此机型判定以
+         * **设备自报的型号名**为准，本命令把判定过程与依据全部打印出来，
+         * 便于新机型用户把结果反馈成一条机型库记录。
+         */
+        if (modelScan) {
             Device::Start(NULL);
+            for (int i = 0; i < 20; i++) {
+                Sleep(500);
+                Device::State s = Device::GetState();
+                if (s.connected && s.settingsValid) break;
+            }
+            Device::State st = Device::GetState();
+
+            char name8[128] = {0}, prof8[128] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, st.modelName, -1, name8, sizeof(name8), NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, st.modelProfile, -1, prof8, sizeof(prof8), NULL, NULL);
+
+            char out[2048];
+            size_t off = 0;
+            out[0] = '\0';
+            AppendFmt(out, sizeof(out), off, "=== 机型识别（--model-scan）===\n");
+            AppendFmt(out, sizeof(out), off, "设备自报型号 : %s\n",
+                      name8[0] ? name8 : "(未读到 —— 移动鼠标唤醒后重试)");
+            AppendFmt(out, sizeof(out), off, "接口 VID/PID : 0x%04X / 0x%04X   <- 机型识别依据\n",
+                      (unsigned)st.ifaceVid, (unsigned)st.ifacePid);
+            AppendFmt(out, sizeof(out), off, "机体 VID/PID : 0x%04X / 0x%04X   <- 11 06 的设备类型码\n",
+                      (unsigned)st.deviceVid, (unsigned)st.devicePid);
+            AppendFmt(out, sizeof(out), off, "连接模式     : %d (%s)\n", st.connectMode,
+                      st.connectMode == 1 ? "2.4G 无线" : "有线/其它");
+            /* 诊断里直接自行解析一次：不依赖设备层的内部簿记，结论更可信 */
+            {
+                const McHose::ModelSpec *sp =
+                    McHose::ResolveModel(st.modelName, st.ifaceVid, st.ifacePid);
+                McHose::ModelCaps cp = McHose::CapsFor(sp, st.modelName);
+                char cpName[128] = {0};
+                if (cp.displayName) WideCharToMultiByte(CP_UTF8, 0, cp.displayName, -1,
+                                                        cpName, sizeof(cpName), NULL, NULL);
+                AppendFmt(out, sizeof(out), off, "机型库匹配   : %s\n",
+                      (sp && sp->name) ? "已匹配" : "(未匹配到具体机型 —— 按同方案默认参数运行)");
+                AppendFmt(out, sizeof(out), off, "  匹配机型名 : %s\n", cpName);
+                AppendFmt(out, sizeof(out), off, "  识别状态   : %s\n",
+                          cp.known ? "已识别" : "未知机型");
+                AppendFmt(out, sizeof(out), off, "  数据来源   : %s\n", cp.source ? cp.source : "unknown");
+                AppendFmt(out, sizeof(out), off, "  DPI 上限   : ");
+                if (cp.dpiMax > 0) AppendFmt(out, sizeof(out), off, "%d\n", cp.dpiMax);
+                else               AppendFmt(out, sizeof(out), off, "(未知)\n");
+                AppendFmt(out, sizeof(out), off, "  DPI 档位数 : %d\n", cp.dpiStages);
+                AppendFmt(out, sizeof(out), off, "  回报率档数 : 无线 %d / 有线 %d\n",
+                          cp.rateCountWireless, cp.rateCountWired);
+            }
+            if (st.settingsValid) {
+                AppendFmt(out, sizeof(out), off, "设备实读档值 :");
+                for (int i = 0; i < 6; i++) AppendFmt(out, sizeof(out), off, " %u", st.dpi[i]);
+                AppendFmt(out, sizeof(out), off, "\n");
+            } else {
+                /* 未读到设置时打印一排 0 会误导，明确说明原因 */
+                AppendFmt(out, sizeof(out), off,
+                          "设备实读档值 : (未读到 —— 鼠标可能休眠，移动鼠标唤醒后重试)\n");
+            }
+            AppendFmt(out, sizeof(out), off,
+                      "\n若为\"未知机型\"，请用 tools\\hid_probe.exe 5253 与 3837 各跑一次，\n"
+                      "记录收报 VID/PID 与 UsagePage，即可在 src\\model_db.cpp 增加一行。\n");
+
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hOut, out, (DWORD)off, &w, NULL);
+            }
+            HANDLE hf = CreateFileW(L"mchose-tray-dump.txt", GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hf, out, (DWORD)off, &w, NULL); CloseHandle(hf);
+            }
+            Device::Stop();
+            return 0;
+        }
+
+        /*
+         * --set-dpi-stage <n>：把 DPI 活动档位设为第 n 档（n 从 0 开始）。
+         *
+         * 存在的理由：逆向期间用 tools\mchose_probe.exe dpitest 做字段映射判定时会写 DPI 索引，
+         * 而该芯片存在"读到的响应比当前命令滞后一条"的现象，导致 dpitest 的自校验还原
+         * 可能误判成功、把活动档位留在错误值上（实测发生过：1600 DPI 被留成 800 DPI）。
+         * 本命令走应用里那套"写后稳定期 + 丢弃一次 + 再读"的可靠校验，用于恢复。
+         */
+        if (setDpiStage >= 0) {
+            Device::Start(NULL);
+            for (int i = 0; i < 20; i++) {
+                Sleep(500);
+                Device::State s = Device::GetState();
+                if (s.connected && s.settingsValid) break;
+            }
+            Device::State before = Device::GetState();
+            Device::RequestSwitchDpiStage(setDpiStage);
+
+            int result = Device::CMD_RESULT_NONE;
+            for (int i = 0; i < 20; i++) {
+                Sleep(400);
+                result = Device::TakeLastCommandResult();
+                if (result != Device::CMD_RESULT_NONE) break;
+            }
+            Device::State after = Device::GetState();
+
+            char out[1500];
+            size_t off = 0;
+            out[0] = '\0';
+            AppendFmt(out, sizeof(out), off, "=== DPI 档位恢复（--set-dpi-stage %d）===\n",
+                      setDpiStage);
+            AppendFmt(out, sizeof(out), off, "写前     : 活动第 %d 档 (%u DPI) / 写入字段 %d\n",
+                      before.dpiActiveIndex + 1,
+                      (before.dpiActiveIndex < 6) ? before.dpi[before.dpiActiveIndex] : 0,
+                      before.dpiIndexRaw);
+            AppendFmt(out, sizeof(out), off, "命令结果 : %s\n",
+                      result == Device::CMD_RESULT_OK_VERIFIED ? "成功（写后回读一致）" :
+                      result == Device::CMD_RESULT_FAILED ? "失败（回读不一致或写入被拒）" :
+                      result == Device::CMD_RESULT_SENT_UNVERIFIED ? "已下发（未校验）" : "超时无结果");
+            AppendFmt(out, sizeof(out), off, "写后     : 活动第 %d 档 (%u DPI) / 写入字段 %d\n",
+                      after.dpiActiveIndex + 1,
+                      (after.dpiActiveIndex < 6) ? after.dpi[after.dpiActiveIndex] : 0,
+                      after.dpiIndexRaw);
+            AppendFmt(out, sizeof(out), off,
+                      "说明     : 写入字段立刻变化；活动档位由设备自行同步后才跟随，\n"
+                      "           因此\"写后活动档位\"暂时等于写前值是正常现象。\n");
+
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != NULL && hOut != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hOut, out, (DWORD)off, &w, NULL);
+            }
+            HANDLE hf = CreateFileW(L"mchose-tray-dump.txt", GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w = 0; WriteFile(hf, out, (DWORD)off, &w, NULL); CloseHandle(hf);
+            }
+            Device::Stop();
+            return (result == 0) ? 0 : 1;
+        }
+
+        if (dump && setRateHz > 0) {            Device::Start(NULL);
             for (int i = 0; i < 20; i++) {
                 Sleep(500);
                 Device::State s = Device::GetState();
@@ -1049,7 +1222,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
                       st.battery, st.charging ? " (充电中)" : "");
             AppendFmt(out, sizeof(out), off, "回报率    : %d Hz (档位 %d/%d)\n",
                       st.rateHz, st.rateIndex + 1, st.rateCount);
-            AppendFmt(out, sizeof(out), off, "DPI 档位  : 第 %d 档\n", st.dpiIndexRaw + 1);
+            {
+                char prof8b[128] = {0};
+                WideCharToMultiByte(CP_UTF8, 0, st.modelProfile, -1, prof8b, sizeof(prof8b), NULL, NULL);
+                AppendFmt(out, sizeof(out), off, "机型库    : %s（%s，来源：%s）\n",
+                          prof8b[0] ? prof8b : "未匹配",
+                          st.modelKnown ? "已识别" : "未知机型",
+                          st.modelSource ? st.modelSource : "unknown");
+                AppendFmt(out, sizeof(out), off, "接口 VID/PID: 0x%04X / 0x%04X   机体: 0x%04X / 0x%04X\n",
+                          (unsigned)st.ifaceVid, (unsigned)st.ifacePid,
+                          (unsigned)st.deviceVid, (unsigned)st.devicePid);
+            }
+            AppendFmt(out, sizeof(out), off, "DPI 档位  : 第 %d 档 (活动索引 %d / 写入字段 %d)\n", st.dpiActiveIndex + 1, st.dpiActiveIndex, st.dpiIndexRaw);
             AppendFmt(out, sizeof(out), off, "DPI 档值  : ");
             for (int i = 0; i < 6; i++) AppendFmt(out, sizeof(out), off, "%u ", st.dpi[i]);
             AppendFmt(out, sizeof(out), off, "\n");

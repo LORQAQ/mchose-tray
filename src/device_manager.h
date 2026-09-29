@@ -44,8 +44,29 @@ struct State {
     int   rateCount = 6;
     int   writeRateIndex = -1;      /* 0x41 写命令实际落入的档位（byte2 高半字节） */
     unsigned char dpiIndexRaw = 0;
+
+    /*
+     * DPI 有两个索引，语义不同，不要混用：
+     *   dpiActiveIndex = 回读 byte1 低半字节（gDpiIndex）  —— **活动**档位，界面显示它
+     *   dpiIndexRaw    = 回读 byte2 低半字节（usbDpiIndex）—— 0x40 写命令的落点
+     *
+     * 实测：0x40 写完后 usbDpiIndex 立即变化，gDpiIndex 要等设备同步才跟随。
+     * 早期界面用的是 dpiIndexRaw，于是切换档位后会显示成"尚未生效"的那个字段，
+     * 与"校验通过"的提示自相矛盾。
+     */
+    unsigned char dpiActiveIndex = 0;
     unsigned short dpi[6] = {0, 0, 0, 0, 0, 0};
     unsigned char sleepMinutes = 0;
+
+    /* 机型库（model_db）解析结果。dpiMax/modelSource 来自静态表，未识别时为默认值。 */
+    unsigned short ifaceVid = 0;    /* HID 接口 VID（机型识别依据，如 0x5253） */
+    unsigned short ifacePid = 0;    /* HID 接口 PID（如 0x1021） */
+    unsigned short deviceVid = 0;   /* 11 06 回报的机体 VID */
+    int  modelDpiMax = 0;           /* 规格 DPI 上限（0 = 未知） */
+    int  modelDpiStages = 6;        /* 该机型 DPI 档位数 */
+    bool modelKnown = false;        /* 是否在机型库中识别出具体型号 */
+    const char *modelSource = "";   /* 数据来源（静态字符串） */
+    wchar_t modelProfile[48] = {0}; /* 机型库里的型号名（可为空） */
 
     /* 累计统计，便于排错 */
     unsigned long readErrors = 0;

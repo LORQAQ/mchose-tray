@@ -21,6 +21,7 @@
 #pragma once
 
 #include <windows.h>
+#include "model_db.h"
 
 namespace McHose {
 
@@ -149,6 +150,14 @@ int RateIndexToHz(int index, int rateCount);
 int HzToRateIndex(int hz, int rateCount);
 
 /* 该机型档位数：无线/2.4G 支持到 8000Hz 共 6 档，有线常见 3 档 */
-int RateCountForMode(unsigned char connectMode);
+int RateCountForMode(unsigned char connectMode, const ModelCaps &caps);
+
+/*
+ * 最近一次成功打开的控制集合的**接口** VID/PID（例如 A7 Pro 2.4G = 5253:1021）。
+ *
+ * 必须与 11 06 回报的"机体 VID/PID"区分开：后者是设备类型码（A7 Pro 报 0x0010），
+ * 而机型识别要按接口 VID/PID 查表——因为接收器/有线会以不同 PID 枚举。
+ */
+bool GetLastOpenedInterfaceIds(unsigned short *vid, unsigned short *pid);
 
 }  // namespace McHose

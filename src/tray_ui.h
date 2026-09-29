@@ -13,7 +13,10 @@ namespace TrayUi {
 void Init(HINSTANCE hInst);
 void Cleanup();
 
-/* 按状态绘制托盘图标。style: 0 = 电池胶囊，1 = 大号数字 */
+/* 按指定边长绘制图标（供高 DPI 验证与预览使用） */
+HICON CreateBatteryIconSized(const Device::State &st, int style, int size);
+
+/* 按状态绘制托盘图标，尺寸取系统托盘图标尺寸。style: 0 = 电池胶囊，1 = 大号数字 */
 HICON CreateBatteryIcon(const Device::State &st, int style);
 
 /* 组装托盘提示文本 */

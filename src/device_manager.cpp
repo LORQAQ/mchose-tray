@@ -56,6 +56,29 @@ void Publish(DWORD mask)
     if (mask != 0 && cb != NULL) cb(snap, mask);
 }
 
+/* 解析机型库并把有效参数写进状态。
+ *
+ * 优先级由 McHose::ResolveModel 决定：设备自报型号名 > VID/PID 精确匹配 > VID 通配。
+ * 之所以这样排：PID 会跨机型复用（0x1020 在 A7 Pro 是有线、在 L7 Pro 是无线），
+ * 只看 PID 会把机型认错，进而选错回报率档数与 DPI 上限。
+ */
+static void ApplyModelCaps(State &st, unsigned short vid, unsigned short pid)
+{
+    const McHose::ModelSpec *spec = McHose::ResolveModel(st.modelName, vid, pid);
+    McHose::ModelCaps caps = McHose::CapsFor(spec, st.modelName);
+
+    st.modelDpiMax     = caps.dpiMax;
+    st.modelDpiStages  = caps.dpiStages;
+    st.modelKnown      = caps.known;
+    st.modelSource     = caps.source;
+    if (spec != NULL && spec->name != NULL) {
+        wcsncpy(st.modelProfile, spec->name, 47);
+        st.modelProfile[47] = L'\0';
+    } else {
+        st.modelProfile[0] = L'\0';
+    }
+    st.rateCount = McHose::RateCountForMode(st.connectMode, caps);
+}
 /* 解析设备主动推送的 report 0x13。
  * 实测（A7 Pro）：payload[0]=0xE2，[3]=充电，[4]=电量，[9..]=型号名。
  * 参考社区对同方案 L7 Pro 的实测，其子类型为 0x1D —— 两者都接受。 */
@@ -93,6 +116,8 @@ bool ParsePush(const unsigned char *buf, int len, State &st, bool &nameChanged)
         }
         name[k] = L'\0';
         if (k > 0 && wcscmp(name, st.modelName) != 0) {
+            /* 型号名变了要重新解析机型：名字是比 PID 更可靠的判据 */
+            ApplyModelCaps(st, st.ifaceVid, st.ifacePid);
             wcsncpy(st.modelName, name, (sizeof(st.modelName) / sizeof(wchar_t)) - 1);
             st.modelName[(sizeof(st.modelName) / sizeof(wchar_t)) - 1] = L'\0';
             nameChanged = true;
@@ -264,18 +289,29 @@ bool RunPendingCommands(HANDLE hFeature, State &st, bool &refreshRequested)
 
     if (doDpi) {
         handled = true;
+        int result = CMD_RESULT_FAILED;
         McHose::AllSettings cur;
-        bool ok = false;
         if (McHose::ReadAllSettings(hFeature, cur, 0)) {
-            ok = McHose::SetDpiStage(hFeature, cur, dpiStage, 0);
-            if (ok) {
+            if (McHose::SetDpiStage(hFeature, cur, dpiStage, 0)) {
+                /*
+                 * 写已下发，默认只报"已下发"。只有回读成功**且**索引确实变了才升级为"校验通过"。
+                 *
+                 * 原实现写成 `if (ok) { if (ReadAllSettingsSettled(...)) ok = (...) }`——
+                 * 回读失败时 ok 仍为 true，于是没做任何校验却报"成功"。
+                 *
+                 * 判据用"任一索引字段匹配"：0x40 直接改写 usbDpiIndex，而 gDpiIndex
+                 * （活动档位）实测会滞后一段时间才跟随，逐字节比对会误报失败。
+                 */
+                result = CMD_RESULT_SENT_UNVERIFIED;
                 McHose::AllSettings after;
-                if (ReadAllSettingsSettled(hFeature, after))
-                    ok = (after.usbDpiIndex == dpiStage);
+                if (ReadAllSettingsSettled(hFeature, after)) {
+                    if ((int)after.usbDpiIndex == dpiStage || (int)after.gDpiIndex == dpiStage)
+                        result = CMD_RESULT_OK_VERIFIED;
+                }
             }
         }
-        Lock(); g_lastCmdResult = ok ? CMD_RESULT_OK_VERIFIED : CMD_RESULT_FAILED; Unlock();
-        if (ok) Publish(CHANGE_SETTINGS);
+        Lock(); g_lastCmdResult = result; Unlock();
+        if (result != CMD_RESULT_FAILED) Publish(CHANGE_SETTINGS);
     }
 
     if (doRefresh) {
@@ -319,6 +355,22 @@ DWORD WINAPI WorkerThread(LPVOID param)
         /* ---- 未打开：尝试打开 ---- */
         if (hFeature == INVALID_HANDLE_VALUE) {
             hFeature = McHose::OpenControlDevice(NULL, 0);
+
+        /*
+         * 一打开设备就把接口 VID/PID 与机型解析落到状态里。
+         * 不能只在 11 06 读取成功时做——鼠标休眠时 11 06 会失败（返回全零），
+         * 那样接口 ID 与机型信息就会一直是空的，诊断输出看起来像"设备不存在"。
+         */
+        if (hFeature != INVALID_HANDLE_VALUE) {
+            unsigned short iv = 0, ip = 0;
+            Lock();
+            if (McHose::GetLastOpenedInterfaceIds(&iv, &ip)) {
+                g_state.ifaceVid = iv;
+                g_state.ifacePid = ip;
+            }
+            ApplyModelCaps(g_state, g_state.ifaceVid, g_state.ifacePid);
+            Unlock();
+        }
             if (hFeature != INVALID_HANDLE_VALUE && push.ev != NULL)
                 push.Reset(McHose::OpenControlDeviceEx(true, NULL, 0));
 
@@ -372,8 +424,10 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 g_state.batteryValid = true;
                 g_state.charging = (info.chargeStatus != 0);
                 g_state.connectMode = info.connectMode;
+                g_state.deviceVid = info.vid;
                 g_state.devicePid = info.pid;
-                g_state.rateCount = McHose::RateCountForMode(info.connectMode);
+                if (McHose::GetLastOpenedInterfaceIds(&g_state.ifaceVid, &g_state.ifacePid))
+                    ApplyModelCaps(g_state, g_state.ifaceVid, g_state.ifacePid);
                 Unlock();
             }
             char ver[32] = {0};
@@ -426,6 +480,12 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 /* 能收到推送即证明设备在线，必须清零失败计数 */
                 if (changed || nameChanged || n >= 12) failStreak = 0;
                 Unlock();
+                if (nameChanged) {
+                    /* 型号名是比 PID 更可靠的判据：拿到名字后重新解析机型并落盘 */
+                    Lock();
+                    ApplyModelCaps(g_state, g_state.ifaceVid, g_state.ifacePid);
+                    Unlock();
+                }
                 if (changed || nameChanged)
                     Publish((changed ? (DWORD)CHANGE_BATTERY : 0) |
                             (nameChanged ? (DWORD)CHANGE_VERSION : 0));
@@ -505,10 +565,12 @@ DWORD WINAPI WorkerThread(LPVOID param)
                     if (g_state.charging != ch) { g_state.charging = ch; mask |= CHANGE_BATTERY; }
                     if (g_state.connectMode != info.connectMode) {
                         g_state.connectMode = info.connectMode;
-                        g_state.rateCount = McHose::RateCountForMode(info.connectMode);
+                        if (McHose::GetLastOpenedInterfaceIds(&g_state.ifaceVid, &g_state.ifacePid))
+                    ApplyModelCaps(g_state, g_state.ifaceVid, g_state.ifacePid);
                         mask |= CHANGE_CONNECTED;
                     }
-                    g_state.devicePid = info.pid;
+                    g_state.deviceVid = info.vid;
+                g_state.devicePid = info.pid;
                     Unlock();
                     if (mask) Publish(mask);
                 } else {
@@ -533,6 +595,7 @@ DWORD WINAPI WorkerThread(LPVOID param)
                     g_state.rateHz != newRateHz ||
                     g_state.writeRateIndex != (int)s.usbRateIndex ||
                     g_state.dpiIndexRaw != s.usbDpiIndex ||
+                    g_state.dpiActiveIndex != s.gDpiIndex ||
                     g_state.sleepMinutes != s.sleep)
                     mask |= CHANGE_SETTINGS;
                 for (int i = 0; i < 6; i++) {
@@ -544,6 +607,7 @@ DWORD WINAPI WorkerThread(LPVOID param)
                 g_state.writeRateIndex  = (int)s.usbRateIndex;
                 g_state.rateHz          = newRateHz;
                 g_state.dpiIndexRaw     = s.usbDpiIndex;
+                g_state.dpiActiveIndex  = s.gDpiIndex;
                 g_state.sleepMinutes    = s.sleep;
                 for (int i = 0; i < 6; i++) g_state.dpi[i] = s.dpi[i];
                 Unlock();
