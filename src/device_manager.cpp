@@ -420,10 +420,16 @@ DWORD WINAPI WorkerThread(LPVOID param)
             /* 首次读取设备信息（含电量），失败则依赖推送 */
             Sleep(60);
             McHose::DeviceInfo info;
-            if (McHose::ReadDeviceInfo(hFeature, info, 0)) {
+            if (McHose::ReadDeviceInfo(hFeature, info, 0) &&
+                McHose::IsPlausibleBattery(info.batteryLevel, info.chargeStatus)) {
                 Lock();
                 g_state.battery = info.batteryLevel;
                 g_state.batteryValid = true;
+                /* 11 06 读到了就说明鼠标可达——有线模式下 11 03 的 connect 也是 0，
+                 * 不能据此判定"休眠"，否则插线后图标会停在灰色、模式显示不出来。 */
+                g_state.deviceInfoValid = true;
+                g_state.mouseLinked = true;
+                g_state.lastBatteryTick = GetTickCount();
                 g_state.charging = (info.chargeStatus != 0);
                 g_state.connectMode = info.connectMode;
                 g_state.deviceVid = info.vid;
@@ -529,26 +535,25 @@ DWORD WINAPI WorkerThread(LPVOID param)
         linked = g_state.mouseLinked;      /* 默认沿用上次结论 */
         Unlock();
 
+        /*
+         * ---- 可达性判据（本次修复的核心）----
+         *
+         * 不能用 11 03 的 connect 单独判定"鼠标是否可达"：**有线模式下 connect 也是 0**
+         * （connect 描述的是 2.4G 链路，不代表鼠标是否存在）。
+         * 曾经就靠它判定，结果插线后被误判成"鼠标休眠"，进而跳过
+         * 11 04 / 11 06 / 12 67 的全部读取——表现为连接模式、DPI、回报率一律显示
+         * "(未读到)"，而且充电状态传不到图标（图标停在灰色"休眠"分支，不会变绿）。
+         *
+         * 现在以 **11 06 是否读到**为权威判据（有线 / 2.4G 两种模式下都能读），
+         * 11 03 的 connect 仅作 fallback，用于 2.4G 下区分"休眠"与"在线"。
+         */
+        bool connOk = false, connConnect = false;
         if (lastLinkTick == 0 || now - lastLinkTick >= 3000) {
             lastLinkTick = now;
             McHose::ConnInfo ci;
             if (McHose::ReadConnInfo(hFeature, ci, 0)) {
-                bool newLinked = (ci.connect != 0);
-                DWORD mask = 0;
-                Lock();
-                if (g_state.mouseLinked != newLinked) {
-                    g_state.mouseLinked = newLinked;
-                    mask |= CHANGE_CONNECTED;
-                }
-                if (!newLinked) {
-                    /* 鼠标不在链路：清掉会显示成 0 的过期数据 */
-                    if (g_state.batteryValid) { g_state.batteryValid = false; mask |= CHANGE_BATTERY; }
-                    g_state.deviceInfoValid = false;
-                    g_state.settingsValid = false;
-                }
-                Unlock();
-                linked = newLinked;
-                if (mask) Publish(mask);
+                connOk = true;
+                connConnect = (ci.connect != 0);
             }
         }
         /*
@@ -568,14 +573,14 @@ DWORD WINAPI WorkerThread(LPVOID param)
             if (stale) Publish(CHANGE_BATTERY);
         }
 
+        bool infoOk = false;
         if (lastInfoTick == 0 || now - lastInfoTick >= 3000) {
             lastInfoTick = now;
-            if (!linked) {
-                /* 鼠标休眠：这不是"读失败"，不应累加离线判定 */
-            } else {
+            {
                 McHose::DeviceInfo info;
                 if (McHose::ReadDeviceInfo(hFeature, info, 0) &&
                     McHose::IsPlausibleBattery(info.batteryLevel, info.chargeStatus)) {
+                    infoOk = true;
                     DWORD mask = 0;
                     Lock();
                     if (g_state.battery != (int)info.batteryLevel || !g_state.batteryValid) {
@@ -601,6 +606,33 @@ DWORD WINAPI WorkerThread(LPVOID param)
                     Lock(); g_state.readErrors++; Unlock();
                 }
             }
+        }
+
+        /*
+         * 合成可达性并据此清理状态。
+         *   11 06 读到       -> 鼠标可达（有线 / 2.4G 都算）
+         *   仅 11 03 读到    -> 用它的 connect（2.4G 下区分休眠）
+         *   两者本轮都没读到 -> 未到节拍，沿用上次结论
+         * 顺序很重要：必须放在 11 06 之后，否则会把刚读到的有效数据清掉。
+         */
+        if (infoOk)      linked = true;
+        else if (connOk) linked = connConnect;
+
+        {
+            DWORD mask = 0;
+            Lock();
+            if (g_state.mouseLinked != linked) {
+                g_state.mouseLinked = linked;
+                mask |= CHANGE_CONNECTED;
+            }
+            if (!linked) {
+                /* 确实不可达：清掉会显示成过期值的字段 */
+                if (g_state.batteryValid) { g_state.batteryValid = false; mask |= CHANGE_BATTERY; }
+                g_state.deviceInfoValid = false;
+                g_state.settingsValid = false;
+            }
+            Unlock();
+            if (mask) Publish(mask);
         }
 
         /* 节拍 500 毫秒（原 3 秒，再原 9 秒）。

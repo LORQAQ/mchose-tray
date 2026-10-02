@@ -23,7 +23,10 @@ namespace McHose {
  */
 static const ModelSpec kPidKnown[] = {
     /* name          vid      pidWL    pidWired  dpiMax  stages  rcWL rcWired source */
-    { L"A7 Pro",     0x5253,  0x1021,  0x1020,   26000,  6,      6,   3,  "实测（本机硬件验证）" },
+    /* A7 Pro：无线=0x1021（接收器）。插线后**鼠标自身**以 0x0010 枚举
+     * （实测；早期文档里写的 0x1020 是按官方机型表推断的，已证伪）。
+     * 注意 0x0010 同时也等于 11 06 回报的"机体 PID"。 */
+    { L"A7 Pro",     0x5253,  0x1021,  0x0010,   26000,  6,      6,   3,  "实测（本机硬件验证）" },
     { L"L7 Pro",     0x5253,  0x1020,  0x00B0,   26000,  0,      6,   3,  "社区 mouse_tray（VID/PID）+ 官网规格（26000dpi）" },
     { L"A7 V2 Ultra",0x3837,  0x100B,  0x0000,   42000,  0,      6,   3,  "社区论坛 lsusb 3837:100b + 官网规格（42000dpi）" },
     { L"K7 Ultra",   0x3837,  0x1001,  0x4150,   42000,  0,      6,   3,  "社区 mchose-cli 协议规格 + 官网规格（42000dpi）" },

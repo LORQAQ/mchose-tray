@@ -1638,8 +1638,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             for (int i = 0; i < 24; i++) {          /* 最多等 12 秒 */
                 Sleep(500);
                 st = Device::GetState();
+                /* 判据不再要求 pushCount > 0：设备主动推送只是加分项。
+                 * 有线模式下设备并不发 0xE2/0x1D 电量推送（只发 0x1A，解码为 0xE5 回声），
+                 * 若把它当必要条件，有线模式会被永远误判成"状态不完整"。 */
                 if (i >= 11 && st.connected && st.mouseLinked && st.settingsValid &&
-                    st.batteryValid && st.dpi[0] != 0 && st.pushCount > 0) {
+                    st.batteryValid && st.deviceInfoValid && st.dpi[0] != 0) {
                     ok = true;
                     break;
                 }
@@ -1669,7 +1672,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int)
             AppendFmt(out, sizeof(out), off, "固件版本  : %s\n", fw[0] ? fw : "(未读到)");
             if (st.deviceInfoValid)
                 AppendFmt(out, sizeof(out), off, "连接模式  : %s\n",
-                          st.connectMode == 1 ? "2.4G 无线" : "有线/其它");
+                          st.connectMode == 1 ? "2.4G 无线（接收器）" :
+                          st.connectMode == 0 ? "有线（USB 直连）" : "其它模式");
             else
                 AppendFmt(out, sizeof(out), off, "连接模式  : (未读到)\n");
             if (st.batteryValid)

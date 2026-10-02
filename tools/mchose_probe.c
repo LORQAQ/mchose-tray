@@ -53,7 +53,9 @@ static const GUID GUID_DEVINTERFACE_HID_LOCAL =
 #endif
 
 #define TARGET_VID  0x5253
-#define TARGET_PID  0x1021
+/* 仅用于打印的"常见接收器 PID"；匹配不再依赖它（见上面的粗筛与属性判定）。
+ * 实测：A7 Pro 无线=0x1021，插线后鼠标自身以 0x0010 枚举。 */
+#define TARGET_PID_HINT 0x1021
 #define TARGET_UP   0xFF01      /* 本机实测的控制集合 */
 #define MAX_PAYLOAD 64
 
@@ -99,10 +101,16 @@ static HANDLE openControlCollection(char *outPath, int outPathLen)
             continue;
         }
 
-        /* 先用接口路径粗筛 VID/PID，避免打开无关设备 */
+        /*
+         * 接口路径粗筛：只按 VID（厂商）筛，**不再写死 PID**。
+         *
+         * 原先这里要求 pid_1021，导致插上线（鼠标自身以 PID 0x0010 枚举）后
+         * 本工具直接报"未找到目标集合"——工具没跟上主程序已经做的多机型/多模式泛化。
+         * 控制集合靠 UsagePage 0xFF01 识别，不看 PID。
+         */
         char path[1024];
         w2a(detail->DevicePath, path, sizeof(path));
-        if (strstr(path, "vid_5253") == NULL || strstr(path, "pid_1021") == NULL) {
+        if (strstr(path, "vid_5253") == NULL && strstr(path, "vid_3837") == NULL) {
             free(detail);
             continue;
         }
@@ -117,8 +125,9 @@ static HANDLE openControlCollection(char *outPath, int outPathLen)
         PHIDP_PREPARSED_DATA pp = NULL;
         HIDP_CAPS caps;
         int matched = 0;
-        if (HidD_GetAttributes(h, &attr) && attr.VendorID == TARGET_VID &&
-            attr.ProductID == TARGET_PID && HidD_GetPreparsedData(h, &pp)) {
+        if (HidD_GetAttributes(h, &attr) &&
+            (attr.VendorID == TARGET_VID || attr.VendorID == 0x3837) &&
+            HidD_GetPreparsedData(h, &pp)) {
             if (HidP_GetCaps(pp, &caps) == HIDP_STATUS_SUCCESS &&
                 caps.UsagePage == TARGET_UP) {
                 matched = 1;
@@ -533,7 +542,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     printf("=== mchose_probe — MCHOSE A7 Pro (VID %04X / PID %04X) 协议验证 ===\n\n",
-           TARGET_VID, TARGET_PID);
+           TARGET_VID, TARGET_PID_HINT);
 
     char path[1024] = {0};
     HANDLE h = openControlCollection(path, sizeof(path));
